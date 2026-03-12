@@ -22,6 +22,7 @@ This phase should establish the provider runtime shape, binding interpretation, 
 - normalize and validate the configured Forgejo base URL
 - derive the Forgejo API base URL from `baseUrl`
 - implement the Forgejo client interface and an initial HTTP client adapter
+- add baseline GitHub Actions CI modeled after `~/Private/code/github/evcraddock/todu-github-plugin/.github/workflows/ci.yml`
 - produce clear errors for invalid bindings, invalid base URLs, or missing local config/auth
 
 ## Deliverables
@@ -32,6 +33,7 @@ This phase should establish the provider runtime shape, binding interpretation, 
 - provider config/auth loading utilities
 - normalized base URL and API URL helpers
 - Forgejo client interface and HTTP client foundation
+- GitHub Actions CI workflow for lint/test/build verification
 - tests for valid and invalid binding/config cases
 
 ## Acceptance Criteria
@@ -44,6 +46,7 @@ This phase should establish the provider runtime shape, binding interpretation, 
 - the provider derives a stable `/api/v1` base from the configured Forgejo instance URL
 - provider runtime can start and stop cleanly without performing full sync yet
 - automated tests cover target parsing, base URL normalization, and config validation behavior
+- a GitHub Actions CI workflow runs the same baseline verification flow as the `todu-github-plugin` example for non-main branch pushes
 
 ## Out of Scope
 
