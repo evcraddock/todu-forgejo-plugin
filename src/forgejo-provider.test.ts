@@ -2,6 +2,7 @@ import { createIntegrationBindingId, createProjectId, type IntegrationBinding } 
 
 import { FORGEJO_PROVIDER_NAME, FORGEJO_REPOSITORY_TARGET_KIND } from "@/forgejo-binding";
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
+import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
 import { createForgejoSyncProvider } from "@/forgejo-provider";
 
 function createBinding(overrides: Partial<IntegrationBinding> = {}): IntegrationBinding {
@@ -63,6 +64,28 @@ describe("forgejo provider", () => {
       taskLinks: [],
     });
     await expect(provider.pull(createBinding({ provider: "github" }), project)).rejects.toThrow();
+  });
+
+  it("respects binding strategies for non-comment field sync", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+    });
+    await provider.initialize({
+      settings: {
+        baseUrl: "https://code.example.com",
+        token: "secret-token",
+      },
+    });
+
+    await expect(provider.pull(createBinding({ strategy: "push" }), project)).resolves.toEqual({
+      tasks: [],
+    });
+    await expect(provider.push(createBinding({ strategy: "pull" }), [], project)).resolves.toEqual({
+      commentLinks: [],
+      taskLinks: [],
+    });
   });
 
   it("maps external tasks into local tasks with normalized defaults", () => {

@@ -31,7 +31,7 @@ const target = {
 };
 
 describe("forgejo bootstrap", () => {
-  it("imports open issues and creates durable links", async () => {
+  it("imports open issues with normalized fields and creates durable links", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();
 
@@ -42,7 +42,7 @@ describe("forgejo bootstrap", () => {
         title: "Open issue",
         body: "Imported body",
         state: "open",
-        labels: ["bug"],
+        labels: ["bug", "status:inprogress", "priority:high"],
         assignees: ["erik"],
         createdAt: "2026-03-12T00:00:00.000Z",
         updatedAt: "2026-03-12T00:00:00.000Z",
@@ -73,13 +73,17 @@ describe("forgejo bootstrap", () => {
     expect(result.tasks[0].externalId).toBe(
       "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#1"
     );
+    expect(result.tasks[0].status).toBe("inprogress");
+    expect(result.tasks[0].priority).toBe("high");
+    expect(result.tasks[0].labels).toEqual(["bug"]);
+    expect(result.tasks[0].assignees).toEqual(["erik"]);
     expect(result.createdLinks).toHaveLength(1);
     expect(linkStore.getByIssueNumber(binding.id, 1)?.externalId).toBe(
       "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#1"
     );
   });
 
-  it("exports active tasks to forgejo and assigns external ids and source urls", async () => {
+  it("exports active tasks to forgejo with normalized fields and creates missing labels", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();
     const tasks: TaskPushPayload[] = [
@@ -90,7 +94,7 @@ describe("forgejo bootstrap", () => {
         status: "active",
         priority: "high",
         projectId: binding.projectId,
-        labels: [],
+        labels: ["bug"],
         assignees: [],
         comments: [],
         createdAt: "2026-03-12T00:00:00.000Z",
@@ -122,6 +126,9 @@ describe("forgejo bootstrap", () => {
     });
 
     expect(result.createdIssues).toHaveLength(1);
+    expect(result.createdIssues[0].state).toBe("open");
+    expect(result.createdIssues[0].labels).toEqual(["bug", "status:active", "priority:high"]);
+    expect(issueClient.snapshotLabels(target)).toContain("bug");
     expect(result.createdLinks).toHaveLength(1);
     expect(tasks[0].externalId).toBeDefined();
     expect(tasks[0].sourceUrl).toBe(
@@ -155,7 +162,7 @@ describe("forgejo bootstrap", () => {
         status: "active",
         priority: "medium",
         projectId: binding.projectId,
-        labels: [],
+        labels: ["needs-review"],
         assignees: [],
         comments: [],
         createdAt: "2026-03-12T00:00:00.000Z",
@@ -177,6 +184,12 @@ describe("forgejo bootstrap", () => {
     expect(result.createdIssues).toHaveLength(0);
     expect(result.createdLinks).toHaveLength(1);
     expect(result.updatedIssues).toHaveLength(1);
+    expect(result.updatedIssues[0].labels).toEqual([
+      "needs-review",
+      "status:active",
+      "priority:medium",
+    ]);
+    expect(issueClient.snapshotLabels(target)).toContain("needs-review");
     expect(linkStore.getByTaskId(binding.id, tasks[0].id)?.issueNumber).toBe(7);
     expect(parseForgejoIssueExternalId(tasks[0].externalId!).issueNumber).toBe(7);
   });

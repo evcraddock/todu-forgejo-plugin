@@ -25,6 +25,10 @@ interface ForgejoApiIssue {
   pull_request?: unknown;
 }
 
+interface ForgejoApiLabel {
+  name: string;
+}
+
 interface ForgejoApiComment {
   id: number;
   body: string;
@@ -210,6 +214,26 @@ export function createHttpForgejoIssueClient(
       );
 
       return mapApiIssue(target, rawIssue);
+    },
+
+    async listLabels(target: ForgejoRepositoryTarget): Promise<string[]> {
+      const rawLabels = await listAllPages<ForgejoApiLabel>(
+        target,
+        `/repos/${target.owner}/${target.repo}/labels`
+      );
+      return rawLabels.map((label) => label.name);
+    },
+
+    async createLabel(target: ForgejoRepositoryTarget, name: string): Promise<void> {
+      await request<ForgejoApiLabel>(
+        target,
+        "POST",
+        `/repos/${target.owner}/${target.repo}/labels`,
+        {
+          name,
+          color: "ededed",
+        }
+      );
     },
 
     async listComments(
