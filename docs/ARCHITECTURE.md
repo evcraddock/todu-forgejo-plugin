@@ -273,17 +273,17 @@ Keep the same logical stores as the GitHub plugin:
 
 ## Task / issue mapping
 
-| todu | Forgejo | Notes |
-| --- | --- | --- |
-| Task | Issue | 1:1 link once bound |
-| Title | Title | bidirectional |
-| Description | Body | markdown on both sides |
-| Status | Issue state + reserved label | same scheme as GitHub plugin |
-| Priority | Reserved label | same scheme as GitHub plugin |
-| Labels | Labels | non-reserved only |
-| Comments / notes | Issue comments | strict 1:1 mirror |
-| Assignees | Assignees | import only in v1 |
-| Due date | none | stays local to todu |
+| todu             | Forgejo                      | Notes                        |
+| ---------------- | ---------------------------- | ---------------------------- |
+| Task             | Issue                        | 1:1 link once bound          |
+| Title            | Title                        | bidirectional                |
+| Description      | Body                         | markdown on both sides       |
+| Status           | Issue state + reserved label | same scheme as GitHub plugin |
+| Priority         | Reserved label               | same scheme as GitHub plugin |
+| Labels           | Labels                       | non-reserved only            |
+| Comments / notes | Issue comments               | strict 1:1 mirror            |
+| Assignees        | Assignees                    | import only in v1            |
+| Due date         | none                         | stays local to todu          |
 
 ## Status mapping
 
@@ -299,13 +299,13 @@ Reserved labels:
 
 State mapping:
 
-| Forgejo issue state | status label | todu status |
-| --- | --- | --- |
-| open | `status:active` | `active` |
-| open | `status:inprogress` | `inprogress` |
-| open | `status:waiting` | `waiting` |
-| closed | `status:done` | `done` |
-| closed | `status:canceled` | `canceled` |
+| Forgejo issue state | status label        | todu status  |
+| ------------------- | ------------------- | ------------ |
+| open                | `status:active`     | `active`     |
+| open                | `status:inprogress` | `inprogress` |
+| open                | `status:waiting`    | `waiting`    |
+| closed              | `status:done`       | `done`       |
+| closed              | `status:canceled`   | `canceled`   |
 
 Normalization rules stay the same:
 
