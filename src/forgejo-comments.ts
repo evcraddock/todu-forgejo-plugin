@@ -291,7 +291,7 @@ async function syncExistingForgejoComment(input: {
   const mirroredBody = input.existingLink.lastMirroredBody ?? remoteBody ?? localBody;
   const localChanged = localBody !== mirroredBody;
   const remoteChanged = remoteBody !== null && remoteBody !== mirroredBody;
-  const localObservedAt = getLocalObservedAt(input.task, input.note);
+  const localObservedAt = getLocalObservedAt(input.note);
 
   if (!localChanged) {
     if (input.remoteComment && input.existingLink.lastMirroredBody !== remoteBody) {
@@ -423,8 +423,8 @@ function createPushCommentLink(
   };
 }
 
-function getLocalObservedAt(task: TaskPushPayload, note: Note): string {
-  return task.updatedAt || note.createdAt;
+function getLocalObservedAt(note: Note): string {
+  return note.createdAt;
 }
 
 function remoteWinsConflict(remoteComment: ForgejoComment, localObservedAt: string): boolean {
