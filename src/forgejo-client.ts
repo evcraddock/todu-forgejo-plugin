@@ -64,6 +64,8 @@ export interface ForgejoIssueClient {
     issueNumber: number,
     input: UpdateForgejoIssueInput
   ): Promise<ForgejoIssue>;
+  listLabels(target: ForgejoRepositoryTarget): Promise<string[]>;
+  createLabel(target: ForgejoRepositoryTarget, name: string): Promise<void>;
   listComments(target: ForgejoRepositoryTarget, issueNumber: number): Promise<ForgejoComment[]>;
   createComment(
     target: ForgejoRepositoryTarget,
@@ -87,6 +89,7 @@ export interface InMemoryForgejoIssueClient extends ForgejoIssueClient {
   ): void;
   snapshotIssues(target: ForgejoRepositoryTarget): ForgejoIssue[];
   snapshotComments(target: ForgejoRepositoryTarget, issueNumber: number): ForgejoComment[];
+  snapshotLabels(target: ForgejoRepositoryTarget): string[];
 }
 
 export interface ForgejoHttpClientOptions {
@@ -118,6 +121,7 @@ export function createForgejoAuthorizationHeader(
 
 export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
   const issuesByRepository = new Map<string, ForgejoIssue[]>();
+  const labelsByRepository = new Map<string, Set<string>>();
   const commentsByIssue = new Map<string, ForgejoComment[]>();
   let nextCommentId = 1;
 
@@ -134,6 +138,18 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
 
   const setIssues = (target: ForgejoRepositoryTarget, issues: ForgejoIssue[]): void => {
     issuesByRepository.set(getRepositoryKey(target), issues);
+  };
+
+  const getLabels = (target: ForgejoRepositoryTarget): Set<string> => {
+    const repositoryKey = getRepositoryKey(target);
+    const existingLabels = labelsByRepository.get(repositoryKey);
+    if (existingLabels) {
+      return existingLabels;
+    }
+
+    const labels = new Set<string>();
+    labelsByRepository.set(repositoryKey, labels);
+    return labels;
   };
 
   const getComments = (target: ForgejoRepositoryTarget, issueNumber: number): ForgejoComment[] =>
@@ -176,10 +192,15 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
 
   return {
     seedIssues(target, issues): void {
+      const labels = getLabels(target);
       setIssues(
         target,
-        issues.map((issue) =>
-          cloneIssue({
+        issues.map((issue) => {
+          for (const label of issue.labels ?? []) {
+            labels.add(label);
+          }
+
+          return cloneIssue({
             ...issue,
             externalId:
               issue.externalId ??
@@ -191,8 +212,8 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
               }),
             sourceUrl: issue.sourceUrl ?? createForgejoIssueSourceUrl(target, issue.number),
             assignees: [...(issue.assignees ?? [])],
-          })
-        )
+          });
+        })
       );
     },
     seedComments(target, issueNumber, comments): void {
@@ -218,6 +239,9 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
     snapshotComments(target, issueNumber): ForgejoComment[] {
       return getComments(target, issueNumber).map(cloneComment);
     },
+    snapshotLabels(target): string[] {
+      return [...getLabels(target)].sort();
+    },
     async listIssues(target, options): Promise<ForgejoIssue[]> {
       return getIssues(target)
         .filter((issue) => !issue.isPullRequest)
@@ -239,6 +263,11 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
     },
     async createIssue(target, input): Promise<ForgejoIssue> {
       const issues = getIssues(target);
+      const labels = [...(input.labels ?? [])];
+      for (const label of labels) {
+        getLabels(target).add(label);
+      }
+
       const nextIssueNumber = issues.reduce((max, issue) => Math.max(max, issue.number), 0) + 1;
       const timestamp = new Date().toISOString();
       const createdIssue: ForgejoIssue = {
@@ -252,7 +281,7 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
         title: input.title,
         body: input.body,
         state: input.state ?? "open",
-        labels: [...(input.labels ?? [])],
+        labels,
         assignees: [],
         sourceUrl: createForgejoIssueSourceUrl(target, nextIssueNumber),
         createdAt: timestamp,
@@ -270,12 +299,17 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
       }
 
       const existingIssue = issues[index];
+      const labels = input.labels ? [...input.labels] : [...existingIssue.labels];
+      for (const label of labels) {
+        getLabels(target).add(label);
+      }
+
       const updatedIssue: ForgejoIssue = {
         ...existingIssue,
         title: input.title ?? existingIssue.title,
         body: input.body ?? existingIssue.body,
         state: input.state ?? existingIssue.state,
-        labels: input.labels ? [...input.labels] : [...existingIssue.labels],
+        labels,
         updatedAt: new Date().toISOString(),
       };
 
@@ -283,6 +317,12 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
       nextIssues[index] = updatedIssue;
       setIssues(target, nextIssues);
       return cloneIssue(updatedIssue);
+    },
+    async listLabels(target): Promise<string[]> {
+      return [...getLabels(target)].sort();
+    },
+    async createLabel(target, name): Promise<void> {
+      getLabels(target).add(name);
     },
     async listComments(target, issueNumber): Promise<ForgejoComment[]> {
       return getComments(target, issueNumber).map(cloneComment);

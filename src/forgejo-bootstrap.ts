@@ -5,6 +5,12 @@ import {
   type ForgejoIssue,
   type ForgejoIssueClient,
 } from "@/forgejo-client";
+import {
+  createForgejoIssueCreateFromTask,
+  createForgejoIssueUpdateFromTask,
+  mapForgejoIssueToExternalTask,
+} from "@/forgejo-fields";
+import { getNormalForgejoLabels } from "@/forgejo-fields";
 import { parseForgejoIssueExternalId } from "@/forgejo-ids";
 import {
   createLinkFromIssue,
@@ -82,19 +88,7 @@ export async function bootstrapForgejoIssuesToTasks(input: {
       createdLinks.push(createdLink);
     }
 
-    tasks.push({
-      externalId: issue.externalId,
-      priority: "medium",
-      title: issue.title,
-      description: issue.body,
-      status: issue.state === "closed" ? "done" : "active",
-      labels: [...issue.labels],
-      assignees: [...issue.assignees],
-      sourceUrl: issue.sourceUrl,
-      createdAt: issue.createdAt,
-      updatedAt: issue.updatedAt,
-      raw: issue,
-    });
+    tasks.push(mapForgejoIssueToExternalTask(issue));
   }
 
   return {
@@ -125,6 +119,18 @@ export async function bootstrapTasksToForgejoIssues(input: {
     repo: input.repo,
   };
 
+  const ensureLabelsExist = async (labels: string[]): Promise<void> => {
+    const normalLabels = getNormalForgejoLabels(labels);
+    const existingLabels = new Set(await input.issueClient.listLabels(target));
+
+    for (const label of normalLabels) {
+      if (!existingLabels.has(label)) {
+        await input.issueClient.createLabel(target, label);
+        existingLabels.add(label);
+      }
+    }
+  };
+
   for (const task of input.tasks) {
     const existingLink = input.linkStore.getByTaskId(input.binding.id, task.id);
     if (existingLink) {
@@ -133,10 +139,13 @@ export async function bootstrapTasksToForgejoIssues(input: {
       task.sourceUrl = existingIssue?.sourceUrl ?? task.sourceUrl;
 
       if (shouldPushTaskUpdate(task, existingIssue)) {
-        const updatedIssue = await input.issueClient.updateIssue(target, existingLink.issueNumber, {
-          title: task.title,
-          body: task.description,
-        });
+        const issueUpdate = createForgejoIssueUpdateFromTask(task);
+        await ensureLabelsExist(issueUpdate.labels ?? []);
+        const updatedIssue = await input.issueClient.updateIssue(
+          target,
+          existingLink.issueNumber,
+          issueUpdate
+        );
         task.sourceUrl = updatedIssue.sourceUrl;
         updatedIssues.push(updatedIssue);
       }
@@ -163,13 +172,12 @@ export async function bootstrapTasksToForgejoIssues(input: {
         matchingExternalId.issueNumber
       );
       if (shouldPushTaskUpdate(task, existingIssue)) {
+        const issueUpdate = createForgejoIssueUpdateFromTask(task);
+        await ensureLabelsExist(issueUpdate.labels ?? []);
         const updatedIssue = await input.issueClient.updateIssue(
           target,
           matchingExternalId.issueNumber,
-          {
-            title: task.title,
-            body: task.description,
-          }
+          issueUpdate
         );
         task.sourceUrl = updatedIssue.sourceUrl;
         updatedIssues.push(updatedIssue);
@@ -181,11 +189,9 @@ export async function bootstrapTasksToForgejoIssues(input: {
       continue;
     }
 
-    const createdIssue = await input.issueClient.createIssue(target, {
-      title: task.title,
-      body: task.description,
-      state: "open",
-    });
+    const issueCreate = createForgejoIssueCreateFromTask(task);
+    await ensureLabelsExist(issueCreate.labels ?? []);
+    const createdIssue = await input.issueClient.createIssue(target, issueCreate);
 
     createdIssues.push(createdIssue);
 

@@ -31,6 +31,20 @@ export {
   type UpdateForgejoIssueInput,
 } from "@/forgejo-client";
 export { bootstrapForgejoIssuesToTasks, bootstrapTasksToForgejoIssues } from "@/forgejo-bootstrap";
+export {
+  createForgejoIssueCreateFromTask,
+  createForgejoIssueUpdateFromTask,
+  createForgejoPriorityFromTask,
+  createForgejoStatusFromTask,
+  getNormalForgejoLabels,
+  mapForgejoIssueToExternalTask,
+  mergeForgejoLabels,
+  normalizeForgejoIssuePriority,
+  normalizeForgejoIssueStatus,
+  type ForgejoFieldMapping,
+  type NormalizedForgejoPriority,
+  type NormalizedForgejoStatus,
+} from "@/forgejo-fields";
 export { createHttpForgejoIssueClient } from "@/forgejo-http-client";
 export {
   createFileForgejoItemLinkStore,
