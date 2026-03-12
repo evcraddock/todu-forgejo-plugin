@@ -10,6 +10,7 @@ export interface ForgejoCommentLink {
   issueNumber: number;
   forgejoCommentId: number;
   lastMirroredAt: string;
+  lastMirroredBody?: string;
 }
 
 export interface ForgejoCommentLinkStore {
@@ -80,6 +81,18 @@ export function createInMemoryForgejoCommentLinkStore(): ForgejoCommentLinkStore
       return [...allLinks.values()];
     },
     save(link): void {
+      const existingByNote = links.get(getNoteKey(link.bindingId, link.noteId));
+      if (existingByNote) {
+        links.delete(getForgejoKey(link.bindingId, existingByNote.forgejoCommentId));
+      }
+
+      const existingByForgejoComment = links.get(
+        getForgejoKey(link.bindingId, link.forgejoCommentId)
+      );
+      if (existingByForgejoComment) {
+        links.delete(getNoteKey(link.bindingId, existingByForgejoComment.noteId));
+      }
+
       links.set(getNoteKey(link.bindingId, link.noteId), link);
       links.set(getForgejoKey(link.bindingId, link.forgejoCommentId), link);
     },

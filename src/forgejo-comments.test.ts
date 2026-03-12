@@ -42,7 +42,10 @@ const target = {
   repo: "todu-forgejo-plugin-test",
 };
 
-function createTask(comments: TaskPushPayload["comments"]): TaskPushPayload {
+function createTask(
+  comments: TaskPushPayload["comments"],
+  updatedAt = "2026-03-12T00:00:00.000Z"
+): TaskPushPayload {
   return {
     id: createTaskId("task-1"),
     title: "Sync comments",
@@ -54,7 +57,7 @@ function createTask(comments: TaskPushPayload["comments"]): TaskPushPayload {
     assignees: [],
     comments,
     createdAt: "2026-03-12T00:00:00.000Z",
-    updatedAt: "2026-03-12T00:00:00.000Z",
+    updatedAt,
   };
 }
 
@@ -123,7 +126,10 @@ describe("forgejo comments", () => {
       "_Synced from Forgejo comment by @alice on 2026-03-12T01:00:00.000Z_\n\nPlain comment body"
     );
     expect(result.createdLinks).toHaveLength(1);
-    expect(commentLinkStore.getByForgejoCommentId(binding.id, 11)?.noteId).toBe("external:11");
+    expect(commentLinkStore.getByForgejoCommentId(binding.id, 11)).toMatchObject({
+      noteId: "external:11",
+      lastMirroredBody: "Plain comment body",
+    });
   });
 
   it("removes durable links for forgejo comments deleted remotely", async () => {
@@ -149,6 +155,7 @@ describe("forgejo comments", () => {
       issueNumber: 7,
       forgejoCommentId: 11,
       lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Plain comment body",
     };
     commentLinkStore.save(existingLink);
 
@@ -218,6 +225,7 @@ describe("forgejo comments", () => {
       issueNumber: 7,
       forgejoCommentId: 21,
       lastMirroredAt: "2026-03-12T00:00:00.000Z",
+      lastMirroredBody: "Old remote body",
     });
     commentLinkStore.save({
       bindingId: binding.id,
@@ -226,24 +234,28 @@ describe("forgejo comments", () => {
       issueNumber: 7,
       forgejoCommentId: 22,
       lastMirroredAt: "2026-03-12T00:00:00.000Z",
+      lastMirroredBody: "Delete me",
     });
 
-    const task = createTask([
-      {
-        id: createNoteId("note-existing"),
-        content: "Updated local body",
-        author: "bob",
-        tags: [],
-        createdAt: "2026-03-12T03:00:00.000Z",
-      },
-      {
-        id: createNoteId("note-new"),
-        content: "Brand new local note",
-        author: "bob",
-        tags: [],
-        createdAt: "2026-03-12T04:00:00.000Z",
-      },
-    ]);
+    const task = createTask(
+      [
+        {
+          id: createNoteId("note-existing"),
+          content: "Updated local body",
+          author: "bob",
+          tags: [],
+          createdAt: "2026-03-12T03:00:00.000Z",
+        },
+        {
+          id: createNoteId("note-new"),
+          content: "Brand new local note",
+          author: "bob",
+          tags: [],
+          createdAt: "2026-03-12T04:00:00.000Z",
+        },
+      ],
+      "2026-03-12T04:30:00.000Z"
+    );
 
     const result = await pushComments({
       binding,
@@ -264,12 +276,17 @@ describe("forgejo comments", () => {
       "_Synced from todu comment by @bob on 2026-03-12T04:00:00.000Z_\n\nBrand new local note"
     );
     expect(result.deletedCommentIds).toEqual([22]);
-    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-new"))).not.toBeNull();
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-new"))).toMatchObject({
+      lastMirroredBody: "Brand new local note",
+    });
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-existing"))).toMatchObject({
+      lastMirroredBody: "Updated local body",
+    });
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-delete"))).toBeNull();
     expect(result.commentLinks).toHaveLength(2);
   });
 
-  it("skips updates when the local note is older than the last mirrored timestamp and ignores imported notes", async () => {
+  it("pushes edits made to imported forgejo notes back to forgejo when the local note changed", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const itemLinkStore = createInMemoryForgejoItemLinkStore();
     const commentLinkStore = createInMemoryForgejoCommentLinkStore();
@@ -290,7 +307,89 @@ describe("forgejo comments", () => {
       {
         id: 21,
         issueNumber: 7,
-        body: "Remote body",
+        body: "Imported body",
+        author: "alice",
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-1"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+      })
+    );
+    commentLinkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-1"),
+      noteId: createNoteId("external:21"),
+      issueNumber: 7,
+      forgejoCommentId: 21,
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Imported body",
+    });
+
+    const task = createTask(
+      [
+        {
+          id: createNoteId("external:21"),
+          content: formatAttributedBody(
+            formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
+            "Edited imported body"
+          ),
+          author: "alice",
+          tags: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+        },
+      ],
+      "2026-03-12T03:00:00.000Z"
+    );
+
+    const result = await pushComments({
+      binding,
+      issueClient,
+      target,
+      tasks: [task],
+      itemLinkStore,
+      commentLinkStore,
+    });
+
+    expect(result.updatedComments).toHaveLength(1);
+    expect(result.updatedComments[0].body).toBe(
+      "_Synced from todu comment by @alice on 2026-03-12T00:00:00.000Z_\n\nEdited imported body"
+    );
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("external:21"))).toMatchObject({
+      lastMirroredBody: "Edited imported body",
+    });
+  });
+
+  it("lets newer remote comment changes win conflicts and ignores unlinked imported notes", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const itemLinkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+        title: "Issue",
+        state: "open",
+        labels: [],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 7, [
+      {
+        id: 21,
+        issueNumber: 7,
+        body: "Remote changed body",
         author: "alice",
         createdAt: "2026-03-12T00:00:00.000Z",
         updatedAt: "2026-03-12T05:00:00.000Z",
@@ -307,35 +406,41 @@ describe("forgejo comments", () => {
         issueNumber: 7,
       })
     );
-
     commentLinkStore.save({
       bindingId: binding.id,
       taskId: createTaskId("task-1"),
-      noteId: createNoteId("note-existing"),
+      noteId: createNoteId("external:21"),
       issueNumber: 7,
       forgejoCommentId: 21,
-      lastMirroredAt: "2026-03-12T05:00:00.000Z",
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Imported body",
     });
 
-    const task = createTask([
-      {
-        id: createNoteId("note-existing"),
-        content: "Stale local body",
-        author: "bob",
-        tags: [],
-        createdAt: "2026-03-12T03:00:00.000Z",
-      },
-      {
-        id: createNoteId("external:21"),
-        content: formatAttributedBody(
-          formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
-          "Imported body"
-        ),
-        author: "alice",
-        tags: [],
-        createdAt: "2026-03-12T05:00:00.000Z",
-      },
-    ]);
+    const task = createTask(
+      [
+        {
+          id: createNoteId("external:21"),
+          content: formatAttributedBody(
+            formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
+            "Local conflicting edit"
+          ),
+          author: "alice",
+          tags: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+        },
+        {
+          id: createNoteId("external:99"),
+          content: formatAttributedBody(
+            formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
+            "Unlinked imported body"
+          ),
+          author: "alice",
+          tags: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+        },
+      ],
+      "2026-03-12T04:00:00.000Z"
+    );
 
     const result = await pushComments({
       binding,
@@ -350,6 +455,9 @@ describe("forgejo comments", () => {
     expect(result.createdComments).toHaveLength(0);
     expect(result.deletedCommentIds).toHaveLength(0);
     expect(result.commentLinks).toHaveLength(1);
-    expect(result.commentLinks[0].externalCommentId).toBe("21");
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("external:21"))).toMatchObject({
+      lastMirroredBody: "Remote changed body",
+    });
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("external:99"))).toBeNull();
   });
 });
