@@ -25,6 +25,13 @@ import {
   type ForgejoBootstrapImportResult,
 } from "@/forgejo-bootstrap";
 import {
+  createFileForgejoCommentLinkStore,
+  createInMemoryForgejoCommentLinkStore,
+  type ForgejoCommentLink,
+  type ForgejoCommentLinkStore,
+} from "@/forgejo-comment-links";
+import { pullComments, pushComments } from "@/forgejo-comments";
+import {
   createInMemoryForgejoIssueClient,
   type ForgejoIssueClient,
   type ForgejoRepositoryTarget,
@@ -49,6 +56,7 @@ export interface ForgejoProviderState {
   initialized: boolean;
   settings: ForgejoProviderSettings | null;
   itemLinks: ForgejoItemLink[];
+  commentLinks: ForgejoCommentLink[];
   lastPullResult: ForgejoBootstrapImportResult | null;
   lastPushResult: ForgejoBootstrapExportResult | null;
 }
@@ -60,6 +68,7 @@ export interface ForgejoSyncProvider extends SyncProvider {
 export interface CreateForgejoSyncProviderOptions {
   issueClient?: ForgejoIssueClient;
   linkStore?: ForgejoItemLinkStore;
+  commentLinkStore?: ForgejoCommentLinkStore;
   initialConfig?: SyncProviderConfig | null;
 }
 
@@ -83,6 +92,7 @@ export function createForgejoSyncProvider(
   let lastPushResult: ForgejoBootstrapExportResult | null = null;
   let issueClient: ForgejoIssueClient = options.issueClient ?? createInMemoryForgejoIssueClient();
   let linkStore = options.linkStore ?? createInMemoryForgejoItemLinkStore();
+  let commentLinkStore = options.commentLinkStore ?? createInMemoryForgejoCommentLinkStore();
 
   const requireInitializedSettings = (): ForgejoProviderSettings => {
     if (!settings) {
@@ -116,6 +126,11 @@ export function createForgejoSyncProvider(
           path.join(settings.storageDir, "item-links.json")
         );
       }
+      if (!options.commentLinkStore) {
+        commentLinkStore = createFileForgejoCommentLinkStore(
+          path.join(settings.storageDir, "comment-links.json")
+        );
+      }
     },
     async shutdown(): Promise<void> {
       settings = null;
@@ -126,6 +141,9 @@ export function createForgejoSyncProvider(
       }
       if (!options.linkStore) {
         linkStore = createInMemoryForgejoItemLinkStore();
+      }
+      if (!options.commentLinkStore) {
+        commentLinkStore = createInMemoryForgejoCommentLinkStore();
       }
     },
     async pull(binding, _project): Promise<SyncProviderPullResult> {
@@ -148,7 +166,15 @@ export function createForgejoSyncProvider(
         linkStore,
       });
 
-      return { tasks: lastPullResult.tasks };
+      const pullCommentsResult = await pullComments({
+        binding,
+        issueClient,
+        target,
+        itemLinkStore: linkStore,
+        commentLinkStore,
+      });
+
+      return { tasks: lastPullResult.tasks, comments: pullCommentsResult.comments };
     },
     async push(binding, tasks, _project): Promise<SyncProviderPushResult> {
       const parsedBinding = validateBinding(binding);
@@ -176,10 +202,19 @@ export function createForgejoSyncProvider(
         linkStore,
       });
 
+      const pushCommentsResult = await pushComments({
+        binding,
+        issueClient,
+        target,
+        tasks,
+        itemLinkStore: linkStore,
+        commentLinkStore,
+      });
+
       const pushResult = lastPushResult;
 
       return {
-        commentLinks: [],
+        commentLinks: pushCommentsResult.commentLinks,
         taskLinks: pushResult.createdLinks.map((link) => ({
           localTaskId: link.taskId,
           externalId: link.externalId,
@@ -222,6 +257,7 @@ export function createForgejoSyncProvider(
         initialized: settings !== null,
         settings,
         itemLinks: linkStore.listAll(),
+        commentLinks: commentLinkStore.listAll(),
         lastPullResult,
         lastPushResult,
       };

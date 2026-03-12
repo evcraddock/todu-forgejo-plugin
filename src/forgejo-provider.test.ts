@@ -58,7 +58,10 @@ describe("forgejo provider", () => {
       },
     });
 
-    await expect(provider.pull(createBinding(), project)).resolves.toEqual({ tasks: [] });
+    await expect(provider.pull(createBinding(), project)).resolves.toEqual({
+      tasks: [],
+      comments: [],
+    });
     await expect(provider.push(createBinding(), [], project)).resolves.toEqual({
       commentLinks: [],
       taskLinks: [],
@@ -66,7 +69,7 @@ describe("forgejo provider", () => {
     await expect(provider.pull(createBinding({ provider: "github" }), project)).rejects.toThrow();
   });
 
-  it("respects binding strategies for non-comment field sync", async () => {
+  it("respects binding strategies for field and comment sync", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const provider = createForgejoSyncProvider({
       issueClient,

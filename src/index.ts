@@ -32,6 +32,23 @@ export {
 } from "@/forgejo-client";
 export { bootstrapForgejoIssuesToTasks, bootstrapTasksToForgejoIssues } from "@/forgejo-bootstrap";
 export {
+  createFileForgejoCommentLinkStore,
+  createInMemoryForgejoCommentLinkStore,
+  type ForgejoCommentLink,
+  type ForgejoCommentLinkStore,
+} from "@/forgejo-comment-links";
+export {
+  formatAttributedBody,
+  formatForgejoAttribution,
+  formatToduAttribution,
+  hasForgejoAttribution,
+  pullComments,
+  pushComments,
+  stripAttribution,
+  type PullCommentsResult,
+  type PushCommentsResult,
+} from "@/forgejo-comments";
+export {
   createForgejoIssueCreateFromTask,
   createForgejoIssueUpdateFromTask,
   createForgejoPriorityFromTask,
