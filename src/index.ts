@@ -20,7 +20,6 @@ export {
   createForgejoCommentSourceUrl,
   createForgejoIssueSourceUrl,
   createInMemoryForgejoIssueClient,
-  formatForgejoIssueExternalId,
   type CreateForgejoIssueInput,
   type ForgejoComment,
   type ForgejoHttpClientOptions,
@@ -31,12 +30,27 @@ export {
   type ListForgejoIssuesOptions,
   type UpdateForgejoIssueInput,
 } from "@/forgejo-client";
+export { bootstrapForgejoIssuesToTasks, bootstrapTasksToForgejoIssues } from "@/forgejo-bootstrap";
 export { createHttpForgejoIssueClient } from "@/forgejo-http-client";
+export {
+  createFileForgejoItemLinkStore,
+  createInMemoryForgejoItemLinkStore,
+  createLinkFromIssue,
+  createLinkFromTask,
+  type ForgejoItemLink,
+  type ForgejoItemLinkStore,
+} from "@/forgejo-links";
+export {
+  ForgejoExternalIdError,
+  createImportedTaskId,
+  formatForgejoIssueExternalId,
+  parseForgejoIssueExternalId,
+  type ForgejoIssueRef,
+} from "@/forgejo-ids";
 export {
   FORGEJO_PROVIDER_VERSION,
   createForgejoRepositoryTarget,
   createForgejoSyncProvider,
-  createImportedTaskId,
   forgejoProvider,
   syncProvider,
   type CreateForgejoSyncProviderOptions,
