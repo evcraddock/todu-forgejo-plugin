@@ -1,6 +1,7 @@
+import path from "node:path";
+
 import {
   SYNC_PROVIDER_API_VERSION,
-  createTaskId,
   type ExternalTask,
   type Project,
   type SyncProvider,
@@ -17,10 +18,26 @@ import {
   parseForgejoBinding,
   type ForgejoRepositoryBinding,
 } from "@/forgejo-binding";
-import { type ForgejoIssueClient } from "@/forgejo-client";
-import { createInMemoryForgejoIssueClient, type ForgejoRepositoryTarget } from "@/forgejo-client";
+import {
+  bootstrapForgejoIssuesToTasks,
+  bootstrapTasksToForgejoIssues,
+  type ForgejoBootstrapExportResult,
+  type ForgejoBootstrapImportResult,
+} from "@/forgejo-bootstrap";
+import {
+  createInMemoryForgejoIssueClient,
+  type ForgejoIssueClient,
+  type ForgejoRepositoryTarget,
+} from "@/forgejo-client";
 import { loadForgejoProviderSettings, type ForgejoProviderSettings } from "@/forgejo-config";
 import { createHttpForgejoIssueClient } from "@/forgejo-http-client";
+import {
+  createFileForgejoItemLinkStore,
+  createInMemoryForgejoItemLinkStore,
+  type ForgejoItemLink,
+  type ForgejoItemLinkStore,
+} from "@/forgejo-links";
+import { createImportedTaskId } from "@/forgejo-ids";
 
 export const FORGEJO_PROVIDER_VERSION = "0.1.0";
 
@@ -31,6 +48,9 @@ const OPEN_STATUSES = new Set<Task["status"]>(["active", "inprogress", "waiting"
 export interface ForgejoProviderState {
   initialized: boolean;
   settings: ForgejoProviderSettings | null;
+  itemLinks: ForgejoItemLink[];
+  lastPullResult: ForgejoBootstrapImportResult | null;
+  lastPushResult: ForgejoBootstrapExportResult | null;
 }
 
 export interface ForgejoSyncProvider extends SyncProvider {
@@ -39,11 +59,8 @@ export interface ForgejoSyncProvider extends SyncProvider {
 
 export interface CreateForgejoSyncProviderOptions {
   issueClient?: ForgejoIssueClient;
+  linkStore?: ForgejoItemLinkStore;
   initialConfig?: SyncProviderConfig | null;
-}
-
-export function createImportedTaskId(externalId: string): Task["id"] {
-  return createTaskId(`forgejo:${externalId}`);
 }
 
 export function createForgejoRepositoryTarget(
@@ -62,7 +79,10 @@ export function createForgejoSyncProvider(
   options: CreateForgejoSyncProviderOptions = {}
 ): ForgejoSyncProvider {
   let settings = options.initialConfig ? loadForgejoProviderSettings(options.initialConfig) : null;
+  let lastPullResult: ForgejoBootstrapImportResult | null = null;
+  let lastPushResult: ForgejoBootstrapExportResult | null = null;
   let issueClient: ForgejoIssueClient = options.issueClient ?? createInMemoryForgejoIssueClient();
+  let linkStore = options.linkStore ?? createInMemoryForgejoItemLinkStore();
 
   const requireInitializedSettings = (): ForgejoProviderSettings => {
     if (!settings) {
@@ -91,24 +111,82 @@ export function createForgejoSyncProvider(
           authType: settings.authType,
         });
       }
+      if (!options.linkStore) {
+        linkStore = createFileForgejoItemLinkStore(
+          path.join(settings.storageDir, "item-links.json")
+        );
+      }
     },
     async shutdown(): Promise<void> {
       settings = null;
+      lastPullResult = null;
+      lastPushResult = null;
       if (!options.issueClient) {
         issueClient = createInMemoryForgejoIssueClient();
+      }
+      if (!options.linkStore) {
+        linkStore = createInMemoryForgejoItemLinkStore();
       }
     },
     async pull(binding, _project): Promise<SyncProviderPullResult> {
       const parsedBinding = validateBinding(binding);
-      void createForgejoRepositoryTarget(parsedBinding, requireInitializedSettings());
-      void issueClient;
-      return { tasks: [] };
+      const currentSettings = requireInitializedSettings();
+      const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
+
+      if (binding.strategy === "none" || binding.strategy === "push") {
+        lastPullResult = { tasks: [], createdLinks: [] };
+        return { tasks: [] };
+      }
+
+      lastPullResult = await bootstrapForgejoIssuesToTasks({
+        binding,
+        baseUrl: target.baseUrl,
+        apiBaseUrl: target.apiBaseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueClient,
+        linkStore,
+      });
+
+      return { tasks: lastPullResult.tasks };
     },
-    async push(binding, _tasks, _project): Promise<SyncProviderPushResult> {
+    async push(binding, tasks, _project): Promise<SyncProviderPushResult> {
       const parsedBinding = validateBinding(binding);
-      void createForgejoRepositoryTarget(parsedBinding, requireInitializedSettings());
-      void issueClient;
-      return { commentLinks: [], taskLinks: [] };
+      const currentSettings = requireInitializedSettings();
+      const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
+
+      if (binding.strategy === "none" || binding.strategy === "pull") {
+        lastPushResult = {
+          createdIssues: [],
+          updatedIssues: [],
+          createdLinks: [],
+          taskUpdates: [],
+        };
+        return { commentLinks: [], taskLinks: [] };
+      }
+
+      lastPushResult = await bootstrapTasksToForgejoIssues({
+        binding,
+        baseUrl: target.baseUrl,
+        apiBaseUrl: target.apiBaseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        tasks,
+        issueClient,
+        linkStore,
+      });
+
+      const pushResult = lastPushResult;
+
+      return {
+        commentLinks: [],
+        taskLinks: pushResult.createdLinks.map((link) => ({
+          localTaskId: link.taskId,
+          externalId: link.externalId,
+          sourceUrl: pushResult.taskUpdates.find((update) => update.taskId === link.taskId)
+            ?.sourceUrl,
+        })),
+      };
     },
     mapToTask(external: ExternalTask, project: Project): Task {
       return {
@@ -143,6 +221,9 @@ export function createForgejoSyncProvider(
       return {
         initialized: settings !== null,
         settings,
+        itemLinks: linkStore.listAll(),
+        lastPullResult,
+        lastPushResult,
       };
     },
   };

@@ -1,5 +1,6 @@
 import type { ForgejoRepositoryTarget as ForgejoRepositoryRef } from "@/forgejo-binding";
 import type { ForgejoAuthType } from "@/forgejo-config";
+import { formatForgejoIssueExternalId } from "@/forgejo-ids";
 
 export interface ForgejoRepositoryTarget extends ForgejoRepositoryRef {
   baseUrl: string;
@@ -93,13 +94,6 @@ export interface ForgejoHttpClientOptions {
   fetchImpl?: typeof fetch;
 }
 
-export function formatForgejoIssueExternalId(
-  target: ForgejoRepositoryTarget,
-  issueNumber: number
-): string {
-  return `${target.baseUrl}/${target.owner}/${target.repo}#${issueNumber}`;
-}
-
 export function createForgejoIssueSourceUrl(
   target: ForgejoRepositoryTarget,
   issueNumber: number
@@ -187,7 +181,14 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
         issues.map((issue) =>
           cloneIssue({
             ...issue,
-            externalId: issue.externalId ?? formatForgejoIssueExternalId(target, issue.number),
+            externalId:
+              issue.externalId ??
+              formatForgejoIssueExternalId({
+                baseUrl: target.baseUrl,
+                owner: target.owner,
+                repo: target.repo,
+                issueNumber: issue.number,
+              }),
             sourceUrl: issue.sourceUrl ?? createForgejoIssueSourceUrl(target, issue.number),
             assignees: [...(issue.assignees ?? [])],
           })
@@ -242,7 +243,12 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
       const timestamp = new Date().toISOString();
       const createdIssue: ForgejoIssue = {
         number: nextIssueNumber,
-        externalId: formatForgejoIssueExternalId(target, nextIssueNumber),
+        externalId: formatForgejoIssueExternalId({
+          baseUrl: target.baseUrl,
+          owner: target.owner,
+          repo: target.repo,
+          issueNumber: nextIssueNumber,
+        }),
         title: input.title,
         body: input.body,
         state: input.state ?? "open",

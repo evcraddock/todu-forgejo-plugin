@@ -1,7 +1,6 @@
 import type { ForgejoAuthType } from "@/forgejo-config";
 import {
   createForgejoAuthorizationHeader,
-  formatForgejoIssueExternalId,
   type CreateForgejoIssueInput,
   type ForgejoComment,
   type ForgejoHttpClientOptions,
@@ -11,6 +10,7 @@ import {
   type ListForgejoIssuesOptions,
   type UpdateForgejoIssueInput,
 } from "@/forgejo-client";
+import { formatForgejoIssueExternalId } from "@/forgejo-ids";
 
 interface ForgejoApiIssue {
   number: number;
@@ -45,7 +45,12 @@ function normalizeAssignees(assignees?: Array<{ login?: string; username?: strin
 function mapApiIssue(target: ForgejoRepositoryTarget, raw: ForgejoApiIssue): ForgejoIssue {
   return {
     number: raw.number,
-    externalId: formatForgejoIssueExternalId(target, raw.number),
+    externalId: formatForgejoIssueExternalId({
+      baseUrl: target.baseUrl,
+      owner: target.owner,
+      repo: target.repo,
+      issueNumber: raw.number,
+    }),
     title: raw.title,
     body: raw.body ?? undefined,
     state: raw.state,
