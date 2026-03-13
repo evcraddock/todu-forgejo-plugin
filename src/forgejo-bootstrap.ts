@@ -10,7 +10,6 @@ import {
   createForgejoIssueUpdateFromTask,
   mapForgejoIssueToExternalTask,
 } from "@/forgejo-fields";
-import { getNormalForgejoLabels } from "@/forgejo-fields";
 import { parseForgejoIssueExternalId } from "@/forgejo-ids";
 import {
   createLinkFromIssue,
@@ -121,10 +120,9 @@ export async function bootstrapTasksToForgejoIssues(input: {
   };
 
   const ensureLabelsExist = async (labels: string[]): Promise<void> => {
-    const normalLabels = getNormalForgejoLabels(labels);
     const existingLabels = new Set(await input.issueClient.listLabels(target));
 
-    for (const label of normalLabels) {
+    for (const label of labels) {
       if (!existingLabels.has(label)) {
         await input.issueClient.createLabel(target, label);
         existingLabels.add(label);

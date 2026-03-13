@@ -26,6 +26,7 @@ interface ForgejoApiIssue {
 }
 
 interface ForgejoApiLabel {
+  id: number;
   name: string;
 }
 
@@ -89,6 +90,56 @@ export function createHttpForgejoIssueClient(
 ): ForgejoIssueClient {
   const authType: ForgejoAuthType = options.authType ?? "token";
   const fetchImpl = options.fetchImpl ?? fetch;
+  const labelIdCache = new Map<string, Map<string, number>>();
+
+  const getLabelRepoKey = (target: ForgejoRepositoryTarget): string =>
+    `${target.apiBaseUrl}/repos/${target.owner}/${target.repo}`;
+
+  const fetchLabelIds = async (target: ForgejoRepositoryTarget): Promise<Map<string, number>> => {
+    const repoKey = getLabelRepoKey(target);
+    const cached = labelIdCache.get(repoKey);
+    if (cached) {
+      return cached;
+    }
+
+    const rawLabels = await listAllPages<ForgejoApiLabel>(
+      target,
+      `/repos/${target.owner}/${target.repo}/labels`
+    );
+
+    const mapping = new Map<string, number>();
+    for (const label of rawLabels) {
+      mapping.set(label.name, label.id);
+    }
+
+    labelIdCache.set(repoKey, mapping);
+    return mapping;
+  };
+
+  const invalidateLabelCache = (target: ForgejoRepositoryTarget): void => {
+    labelIdCache.delete(getLabelRepoKey(target));
+  };
+
+  const resolveLabelIds = async (
+    target: ForgejoRepositoryTarget,
+    labelNames: string[]
+  ): Promise<number[]> => {
+    if (labelNames.length === 0) {
+      return [];
+    }
+
+    const mapping = await fetchLabelIds(target);
+    const ids: number[] = [];
+
+    for (const name of labelNames) {
+      const id = mapping.get(name);
+      if (id != null) {
+        ids.push(id);
+      }
+    }
+
+    return ids;
+  };
 
   const request = async <T>(
     target: ForgejoRepositoryTarget,
@@ -182,6 +233,7 @@ export function createHttpForgejoIssueClient(
       target: ForgejoRepositoryTarget,
       input: CreateForgejoIssueInput
     ): Promise<ForgejoIssue> {
+      const labelIds = input.labels ? await resolveLabelIds(target, input.labels) : undefined;
       const rawIssue = await request<ForgejoApiIssue>(
         target,
         "POST",
@@ -189,7 +241,7 @@ export function createHttpForgejoIssueClient(
         {
           title: input.title,
           body: input.body,
-          labels: input.labels,
+          labels: labelIds,
         }
       );
 
@@ -201,6 +253,7 @@ export function createHttpForgejoIssueClient(
       issueNumber: number,
       input: UpdateForgejoIssueInput
     ): Promise<ForgejoIssue> {
+      const labelIds = input.labels ? await resolveLabelIds(target, input.labels) : undefined;
       const rawIssue = await request<ForgejoApiIssue>(
         target,
         "PATCH",
@@ -209,7 +262,7 @@ export function createHttpForgejoIssueClient(
           ...(input.title != null ? { title: input.title } : {}),
           ...(input.body != null ? { body: input.body } : {}),
           ...(input.state != null ? { state: input.state } : {}),
-          ...(input.labels != null ? { labels: input.labels } : {}),
+          ...(labelIds != null ? { labels: labelIds } : {}),
         }
       );
 
@@ -234,6 +287,7 @@ export function createHttpForgejoIssueClient(
           color: "ededed",
         }
       );
+      invalidateLabelCache(target);
     },
 
     async listComments(
