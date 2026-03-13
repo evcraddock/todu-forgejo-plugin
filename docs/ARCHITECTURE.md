@@ -170,7 +170,7 @@ Recommended config shape:
 
 - `settings.baseUrl` — required. Base web URL for the Forgejo instance. The plugin derives API paths from this.
 - `settings.token` — required. Personal access token used for all bindings.
-- `settings.storageDir` — optional. Directory for plugin-owned local state.
+- `settings.storageDir` — optional. Directory for plugin-owned local state. When omitted, the provider keeps local state in memory for the current process only.
 
 ### Derived local files
 

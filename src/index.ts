@@ -32,6 +32,15 @@ export {
 } from "@/forgejo-client";
 export { bootstrapForgejoIssuesToTasks, bootstrapTasksToForgejoIssues } from "@/forgejo-bootstrap";
 export {
+  createForgejoBindingStatus,
+  updateForgejoBindingStatusBlocked,
+  updateForgejoBindingStatusError,
+  updateForgejoBindingStatusIdle,
+  updateForgejoBindingStatusRunning,
+  type ForgejoBindingStatus,
+  type ForgejoBindingStatusState,
+} from "@/forgejo-binding-status";
+export {
   createFileForgejoCommentLinkStore,
   createInMemoryForgejoCommentLinkStore,
   type ForgejoCommentLink,
@@ -64,6 +73,13 @@ export {
 } from "@/forgejo-fields";
 export { createHttpForgejoIssueClient } from "@/forgejo-http-client";
 export {
+  createForgejoSyncLogger,
+  formatForgejoLogEntry,
+  type ForgejoSyncLogContext,
+  type ForgejoSyncLogEntry,
+  type ForgejoSyncLogger,
+} from "@/forgejo-logger";
+export {
   createFileForgejoItemLinkStore,
   createInMemoryForgejoItemLinkStore,
   createLinkFromIssue,
@@ -72,6 +88,12 @@ export {
   type ForgejoItemLinkStore,
 } from "@/forgejo-links";
 export {
+  createForgejoLoopPreventionStore,
+  createForgejoWriteKey,
+  type ForgejoLoopPreventionStore,
+  type ForgejoWriteRecord,
+} from "@/forgejo-loop-prevention";
+export {
   ForgejoExternalIdError,
   createImportedTaskId,
   formatForgejoIssueExternalId,
@@ -79,6 +101,7 @@ export {
   type ForgejoIssueRef,
 } from "@/forgejo-ids";
 export {
+  classifyForgejoSyncError,
   FORGEJO_PROVIDER_VERSION,
   createForgejoRepositoryTarget,
   createForgejoSyncProvider,
@@ -86,5 +109,19 @@ export {
   syncProvider,
   type CreateForgejoSyncProviderOptions,
   type ForgejoProviderState,
+  type ForgejoSyncErrorClassification,
   type ForgejoSyncProvider,
 } from "@/forgejo-provider";
+export {
+  computeNextForgejoRetryDelay,
+  createFileForgejoBindingRuntimeStore,
+  createInitialForgejoRuntimeState,
+  createInMemoryForgejoBindingRuntimeStore,
+  recordForgejoBlocked,
+  recordForgejoFailure,
+  recordForgejoSuccess,
+  shouldForgejoRetry,
+  type ForgejoBindingRuntimeState,
+  type ForgejoBindingRuntimeStore,
+  type ForgejoRetryConfig,
+} from "@/forgejo-runtime";

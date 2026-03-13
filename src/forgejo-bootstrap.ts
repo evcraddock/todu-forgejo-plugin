@@ -106,6 +106,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
   tasks: TaskPushPayload[];
   issueClient: ForgejoIssueClient;
   linkStore: ForgejoItemLinkStore;
+  shouldSkipIssueUpdate?: (issue: ForgejoIssue) => boolean;
 }): Promise<ForgejoBootstrapExportResult> {
   const createdIssues: ForgejoIssue[] = [];
   const updatedIssues: ForgejoIssue[] = [];
@@ -138,7 +139,10 @@ export async function bootstrapTasksToForgejoIssues(input: {
       task.externalId = existingLink.externalId;
       task.sourceUrl = existingIssue?.sourceUrl ?? task.sourceUrl;
 
-      if (shouldPushTaskUpdate(task, existingIssue)) {
+      if (
+        shouldPushTaskUpdate(task, existingIssue) &&
+        !(existingIssue && input.shouldSkipIssueUpdate?.(existingIssue))
+      ) {
         const issueUpdate = createForgejoIssueUpdateFromTask(task);
         await ensureLabelsExist(issueUpdate.labels ?? []);
         const updatedIssue = await input.issueClient.updateIssue(
@@ -171,7 +175,10 @@ export async function bootstrapTasksToForgejoIssues(input: {
         target,
         matchingExternalId.issueNumber
       );
-      if (shouldPushTaskUpdate(task, existingIssue)) {
+      if (
+        shouldPushTaskUpdate(task, existingIssue) &&
+        !(existingIssue && input.shouldSkipIssueUpdate?.(existingIssue))
+      ) {
         const issueUpdate = createForgejoIssueUpdateFromTask(task);
         await ensureLabelsExist(issueUpdate.labels ?? []);
         const updatedIssue = await input.issueClient.updateIssue(
