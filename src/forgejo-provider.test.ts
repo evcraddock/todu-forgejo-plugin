@@ -324,7 +324,7 @@ describe("forgejo provider runtime integration", () => {
 
     const firstTask: TaskPushPayload = {
       id: createTaskId("task-loop"),
-      title: "Loop test",
+      title: "Loop test updated",
       description: "",
       status: "active",
       priority: "medium",

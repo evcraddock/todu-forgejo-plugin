@@ -228,7 +228,15 @@ export async function bootstrapTasksToForgejoIssues(input: {
 }
 
 function shouldPushTaskUpdate(task: TaskPushPayload, issue: ForgejoIssue | null): boolean {
-  if (!issue?.updatedAt) {
+  if (!issue) {
+    return true;
+  }
+
+  if (issueMatchesTask(task, issue)) {
+    return false;
+  }
+
+  if (!issue.updatedAt) {
     return true;
   }
 
@@ -240,6 +248,34 @@ function shouldPushTaskUpdate(task: TaskPushPayload, issue: ForgejoIssue | null)
   }
 
   return taskUpdatedAt >= issueUpdatedAt;
+}
+
+function issueMatchesTask(task: TaskPushPayload, issue: ForgejoIssue): boolean {
+  const expected = createForgejoIssueCreateFromTask(task);
+
+  if (expected.title !== issue.title) {
+    return false;
+  }
+
+  if ((expected.body ?? "") !== (issue.body ?? "")) {
+    return false;
+  }
+
+  const expectedState = expected.state ?? "open";
+  if (expectedState !== issue.state) {
+    return false;
+  }
+
+  const expectedLabels = [...(expected.labels ?? [])].sort();
+  const issueLabels = [...issue.labels].sort();
+  if (
+    expectedLabels.length !== issueLabels.length ||
+    expectedLabels.some((label, index) => label !== issueLabels[index])
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function getMatchingExternalId(
