@@ -210,7 +210,7 @@ export async function pushComments(input: {
           createdComments
         );
         commentLinks.push(
-          createPushCommentLink(note.id, itemLink.externalId, createdComment.id, createdComment)
+          createPushCommentLink(note.id, String(task.id), createdComment.id, createdComment)
         );
         continue;
       }
@@ -232,7 +232,7 @@ export async function pushComments(input: {
       commentLinks.push(
         createPushCommentLink(
           note.id,
-          itemLink.externalId,
+          String(task.id),
           updatedComment?.id ?? existingLink.forgejoCommentId,
           updatedComment
         )
