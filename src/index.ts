@@ -117,6 +117,7 @@ export {
   createFileForgejoBindingRuntimeStore,
   createInitialForgejoRuntimeState,
   createInMemoryForgejoBindingRuntimeStore,
+  recordForgejoBlocked,
   recordForgejoFailure,
   recordForgejoSuccess,
   shouldForgejoRetry,

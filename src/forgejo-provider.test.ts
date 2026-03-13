@@ -278,6 +278,77 @@ describe("forgejo provider runtime integration", () => {
     expect(writes[0].key).toContain("issue:");
   });
 
+  it("uses loop prevention to skip repeated issue mirror writes", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 1,
+        externalId: "https://code.example.com/acme/roadmap#1",
+        title: "Loop test",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    linkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-loop"),
+      issueNumber: 1,
+      externalId: "https://code.example.com/acme/roadmap#1",
+    });
+
+    const originalUpdateIssue = issueClient.updateIssue.bind(issueClient);
+    let updateCallCount = 0;
+    issueClient.updateIssue = async (bindingTarget, issueNumber, input) => {
+      updateCallCount += 1;
+      return originalUpdateIssue(bindingTarget, issueNumber, input);
+    };
+
+    const loopPreventionStore = createForgejoLoopPreventionStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore,
+      loopPreventionStore,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    const firstTask: TaskPushPayload = {
+      id: createTaskId("task-loop"),
+      title: "Loop test",
+      description: "",
+      status: "active",
+      priority: "medium",
+      projectId: createBinding().projectId,
+      labels: [],
+      assignees: [],
+      comments: [],
+      createdAt: "2026-03-12T00:00:00.000Z",
+      updatedAt: "2026-03-12T01:00:00.000Z",
+    };
+
+    await provider.push(createBinding(), [firstTask], project);
+    expect(updateCallCount).toBe(1);
+
+    const issueUpdatedAt = issueClient.snapshotIssues(target)[0].updatedAt!;
+    const secondTask: TaskPushPayload = {
+      ...firstTask,
+      updatedAt: issueUpdatedAt,
+    };
+
+    await provider.push(createBinding(), [secondTask], project);
+    expect(updateCallCount).toBe(1);
+  });
+
   it("updates binding status through running to idle on success", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
@@ -337,6 +408,36 @@ describe("forgejo provider runtime integration", () => {
     expect(status!.state).toBe("blocked");
     expect(status!.lastErrorSummary).toContain("authentication failed");
     expect(logger.getEntries().at(-1)?.message).toBe("pull blocked");
+  });
+
+  it("skips future cycles temporarily after a blocked auth failure", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    let callCount = 0;
+    issueClient.listIssues = async () => {
+      callCount += 1;
+      throw new Error("Forgejo API GET /repos/acme/roadmap/issues failed: 401 unauthorized");
+    };
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow();
+    const retryResult = await provider.pull(createBinding(), project);
+
+    expect(retryResult.tasks).toEqual([]);
+    expect(callCount).toBe(1);
+    expect(runtimeStore.get(createBinding().id)?.nextRetryAt).not.toBeNull();
   });
 
   it("resets retry state after a successful cycle following a failure", async () => {

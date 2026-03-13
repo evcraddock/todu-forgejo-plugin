@@ -68,6 +68,7 @@ import {
   createFileForgejoBindingRuntimeStore,
   createInitialForgejoRuntimeState,
   createInMemoryForgejoBindingRuntimeStore,
+  recordForgejoBlocked,
   recordForgejoFailure,
   recordForgejoSuccess,
   shouldForgejoRetry,
@@ -350,6 +351,17 @@ export function createForgejoSyncProvider(
           tasks,
           issueClient,
           linkStore,
+          shouldSkipIssueUpdate: (issue) => {
+            const issueTimestamp = issue.updatedAt ?? issue.createdAt;
+            if (!issueTimestamp) {
+              return false;
+            }
+
+            return loopPreventionStore.isOwnWrite(
+              createForgejoWriteKey("issue", String(binding.id), String(issue.number)),
+              issueTimestamp
+            );
+          },
         });
 
         for (const createdIssue of lastPushResult.createdIssues) {
@@ -487,13 +499,7 @@ export function createForgejoSyncProvider(
       return;
     }
 
-    runtimeStore.save({
-      ...runtimeState,
-      nextRetryAt: null,
-      retryAttempt: 0,
-      lastError: classification.summary,
-      lastAttemptAt: new Date().toISOString(),
-    });
+    runtimeStore.save(recordForgejoBlocked(runtimeState, classification.summary));
     bindingStatuses.set(
       bindingId,
       updateForgejoBindingStatusBlocked(status, classification.summary)

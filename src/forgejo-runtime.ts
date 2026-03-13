@@ -30,6 +30,11 @@ const DEFAULT_RETRY_CONFIG: ForgejoRetryConfig = {
   maxSeconds: 300,
 };
 
+const DEFAULT_BLOCKED_RETRY_CONFIG: ForgejoRetryConfig = {
+  initialSeconds: 3600,
+  maxSeconds: 3600,
+};
+
 export function createInitialForgejoRuntimeState(
   bindingId: IntegrationBinding["id"]
 ): ForgejoBindingRuntimeState {
@@ -88,6 +93,15 @@ export function recordForgejoFailure(
     lastError: error,
     lastAttemptAt: now.toISOString(),
   };
+}
+
+export function recordForgejoBlocked(
+  state: ForgejoBindingRuntimeState,
+  error: string,
+  config: ForgejoRetryConfig = DEFAULT_BLOCKED_RETRY_CONFIG,
+  now: Date = new Date()
+): ForgejoBindingRuntimeState {
+  return recordForgejoFailure(state, error, config, now);
 }
 
 export function shouldForgejoRetry(
