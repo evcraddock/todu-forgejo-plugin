@@ -16,7 +16,7 @@ describe("forgejo config", () => {
     expect(settings.baseUrl).toBe("https://code.example.com/forgejo");
     expect(settings.apiBaseUrl).toBe("https://code.example.com/forgejo/api/v1");
     expect(settings.token).toBe("secret-token");
-    expect(settings.storageDir).toBe(".todu-forgejo-plugin");
+    expect(settings.storageDir).toBeNull();
     expect(settings.authType).toBe("token");
   });
 
@@ -30,6 +30,18 @@ describe("forgejo config", () => {
     });
 
     expect(settings.authType).toBe("bearer");
+  });
+
+  it("preserves an explicit storage directory when configured", () => {
+    const settings = loadForgejoProviderSettings({
+      settings: {
+        baseUrl: "https://code.example.com",
+        token: "secret-token",
+        storageDir: ".todu-forgejo-plugin",
+      },
+    });
+
+    expect(settings.storageDir).toBe(".todu-forgejo-plugin");
   });
 
   it("rejects missing token or base url", () => {

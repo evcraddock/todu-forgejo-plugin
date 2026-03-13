@@ -200,17 +200,17 @@ export function createForgejoSyncProvider(
           authType: settings.authType,
         });
       }
-      if (!options.linkStore) {
+      if (!options.linkStore && settings.storageDir) {
         linkStore = createFileForgejoItemLinkStore(
           path.join(settings.storageDir, "item-links.json")
         );
       }
-      if (!options.commentLinkStore) {
+      if (!options.commentLinkStore && settings.storageDir) {
         commentLinkStore = createFileForgejoCommentLinkStore(
           path.join(settings.storageDir, "comment-links.json")
         );
       }
-      if (!options.runtimeStore) {
+      if (!options.runtimeStore && settings.storageDir) {
         runtimeStore = createFileForgejoBindingRuntimeStore(
           path.join(settings.storageDir, "runtime-state.json")
         );

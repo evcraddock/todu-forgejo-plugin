@@ -13,7 +13,7 @@ export interface ForgejoProviderSettings {
   baseUrl: string;
   apiBaseUrl: string;
   token: string;
-  storageDir: string;
+  storageDir: string | null;
   authType: ForgejoAuthType;
 }
 
@@ -121,7 +121,7 @@ export function loadForgejoProviderSettings(config: SyncProviderConfig): Forgejo
     baseUrl,
     apiBaseUrl: deriveForgejoApiBaseUrl(baseUrl),
     token: token.trim(),
-    storageDir: typeof storageDir === "string" ? storageDir.trim() : ".todu-forgejo-plugin",
+    storageDir: typeof storageDir === "string" ? storageDir.trim() : null,
     authType: authType ?? "token",
   };
 }
