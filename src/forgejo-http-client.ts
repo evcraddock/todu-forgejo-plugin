@@ -253,7 +253,6 @@ export function createHttpForgejoIssueClient(
       issueNumber: number,
       input: UpdateForgejoIssueInput
     ): Promise<ForgejoIssue> {
-      const labelIds = input.labels ? await resolveLabelIds(target, input.labels) : undefined;
       const rawIssue = await request<ForgejoApiIssue>(
         target,
         "PATCH",
@@ -262,9 +261,18 @@ export function createHttpForgejoIssueClient(
           ...(input.title != null ? { title: input.title } : {}),
           ...(input.body != null ? { body: input.body } : {}),
           ...(input.state != null ? { state: input.state } : {}),
-          ...(labelIds != null ? { labels: labelIds } : {}),
         }
       );
+
+      if (input.labels != null) {
+        const labelIds = await resolveLabelIds(target, input.labels);
+        await request<ForgejoApiLabel[]>(
+          target,
+          "PUT",
+          `/repos/${target.owner}/${target.repo}/issues/${issueNumber}/labels`,
+          { labels: labelIds }
+        );
+      }
 
       return mapApiIssue(target, rawIssue);
     },
