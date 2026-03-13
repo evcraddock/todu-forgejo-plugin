@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   SYNC_PROVIDER_API_VERSION,
   type ExternalTask,
+  type IntegrationBinding,
   type Project,
   type SyncProvider,
   type SyncProviderConfig,
@@ -18,6 +19,14 @@ import {
   parseForgejoBinding,
   type ForgejoRepositoryBinding,
 } from "@/forgejo-binding";
+import {
+  createForgejoBindingStatus,
+  updateForgejoBindingStatusBlocked,
+  updateForgejoBindingStatusError,
+  updateForgejoBindingStatusIdle,
+  updateForgejoBindingStatusRunning,
+  type ForgejoBindingStatus,
+} from "@/forgejo-binding-status";
 import {
   bootstrapForgejoIssuesToTasks,
   bootstrapTasksToForgejoIssues,
@@ -44,6 +53,28 @@ import {
   type ForgejoItemLink,
   type ForgejoItemLinkStore,
 } from "@/forgejo-links";
+import {
+  createForgejoSyncLogger,
+  type ForgejoSyncLogContext,
+  type ForgejoSyncLogger,
+} from "@/forgejo-logger";
+import {
+  createForgejoLoopPreventionStore,
+  createForgejoWriteKey,
+  type ForgejoLoopPreventionStore,
+  type ForgejoWriteRecord,
+} from "@/forgejo-loop-prevention";
+import {
+  createFileForgejoBindingRuntimeStore,
+  createInitialForgejoRuntimeState,
+  createInMemoryForgejoBindingRuntimeStore,
+  recordForgejoFailure,
+  recordForgejoSuccess,
+  shouldForgejoRetry,
+  type ForgejoBindingRuntimeState,
+  type ForgejoBindingRuntimeStore,
+  type ForgejoRetryConfig,
+} from "@/forgejo-runtime";
 import { createImportedTaskId } from "@/forgejo-ids";
 
 export const FORGEJO_PROVIDER_VERSION = "0.1.0";
@@ -51,14 +82,19 @@ export const FORGEJO_PROVIDER_VERSION = "0.1.0";
 const DEFAULT_TIMESTAMP = new Date(0).toISOString();
 const DEFAULT_PRIORITY: Task["priority"] = "medium";
 const OPEN_STATUSES = new Set<Task["status"]>(["active", "inprogress", "waiting"]);
+const DEFAULT_LOOP_PREVENTION_MAX_AGE_MS = 10 * 60 * 1000;
 
 export interface ForgejoProviderState {
   initialized: boolean;
   settings: ForgejoProviderSettings | null;
   itemLinks: ForgejoItemLink[];
   commentLinks: ForgejoCommentLink[];
+  runtimeStates: ForgejoBindingRuntimeState[];
+  loopPreventionWrites: ForgejoWriteRecord[];
+  logEntries: ReturnType<ForgejoSyncLogger["getEntries"]>;
   lastPullResult: ForgejoBootstrapImportResult | null;
   lastPushResult: ForgejoBootstrapExportResult | null;
+  bindingStatuses: Map<IntegrationBinding["id"], ForgejoBindingStatus>;
 }
 
 export interface ForgejoSyncProvider extends SyncProvider {
@@ -69,6 +105,10 @@ export interface CreateForgejoSyncProviderOptions {
   issueClient?: ForgejoIssueClient;
   linkStore?: ForgejoItemLinkStore;
   commentLinkStore?: ForgejoCommentLinkStore;
+  runtimeStore?: ForgejoBindingRuntimeStore;
+  loopPreventionStore?: ForgejoLoopPreventionStore;
+  logger?: ForgejoSyncLogger;
+  retryConfig?: ForgejoRetryConfig;
   initialConfig?: SyncProviderConfig | null;
 }
 
@@ -93,6 +133,44 @@ export function createForgejoSyncProvider(
   let issueClient: ForgejoIssueClient = options.issueClient ?? createInMemoryForgejoIssueClient();
   let linkStore = options.linkStore ?? createInMemoryForgejoItemLinkStore();
   let commentLinkStore = options.commentLinkStore ?? createInMemoryForgejoCommentLinkStore();
+  let runtimeStore = options.runtimeStore ?? createInMemoryForgejoBindingRuntimeStore();
+  let loopPreventionStore = options.loopPreventionStore ?? createForgejoLoopPreventionStore();
+  const logger = options.logger ?? createForgejoSyncLogger();
+  const retryConfig = options.retryConfig;
+  const bindingStatuses = new Map<IntegrationBinding["id"], ForgejoBindingStatus>();
+
+  const getOrCreateBindingStatus = (bindingId: IntegrationBinding["id"]): ForgejoBindingStatus => {
+    let status = bindingStatuses.get(bindingId);
+    if (!status) {
+      status = createForgejoBindingStatus(bindingId);
+      bindingStatuses.set(bindingId, status);
+    }
+
+    return status;
+  };
+
+  const getOrCreateRuntimeState = (
+    bindingId: IntegrationBinding["id"]
+  ): ForgejoBindingRuntimeState => {
+    let state = runtimeStore.get(bindingId);
+    if (!state) {
+      state = createInitialForgejoRuntimeState(bindingId);
+      runtimeStore.save(state);
+    }
+
+    return state;
+  };
+
+  const createLogContext = (
+    binding: IntegrationBinding,
+    parsedBinding: ForgejoRepositoryBinding,
+    direction: "pull" | "push"
+  ): ForgejoSyncLogContext => ({
+    bindingId: binding.id,
+    projectId: String(binding.projectId),
+    repo: `${parsedBinding.owner}/${parsedBinding.repo}`,
+    direction,
+  });
 
   const requireInitializedSettings = (): ForgejoProviderSettings => {
     if (!settings) {
@@ -131,6 +209,14 @@ export function createForgejoSyncProvider(
           path.join(settings.storageDir, "comment-links.json")
         );
       }
+      if (!options.runtimeStore) {
+        runtimeStore = createFileForgejoBindingRuntimeStore(
+          path.join(settings.storageDir, "runtime-state.json")
+        );
+      }
+      if (!options.loopPreventionStore) {
+        loopPreventionStore = createForgejoLoopPreventionStore();
+      }
     },
     async shutdown(): Promise<void> {
       settings = null;
@@ -145,41 +231,89 @@ export function createForgejoSyncProvider(
       if (!options.commentLinkStore) {
         commentLinkStore = createInMemoryForgejoCommentLinkStore();
       }
+      if (!options.runtimeStore) {
+        runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+      }
+      if (!options.loopPreventionStore) {
+        loopPreventionStore = createForgejoLoopPreventionStore();
+      }
     },
     async pull(binding, _project): Promise<SyncProviderPullResult> {
       const parsedBinding = validateBinding(binding);
       const currentSettings = requireInitializedSettings();
       const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
+      const logContext = createLogContext(binding, parsedBinding, "pull");
 
       if (binding.strategy === "none" || binding.strategy === "push") {
         lastPullResult = { tasks: [], createdLinks: [] };
+        logger.debug("skipping pull due to binding strategy", logContext);
         return { tasks: [] };
       }
 
-      lastPullResult = await bootstrapForgejoIssuesToTasks({
-        binding,
-        baseUrl: target.baseUrl,
-        apiBaseUrl: target.apiBaseUrl,
-        owner: target.owner,
-        repo: target.repo,
-        issueClient,
-        linkStore,
-      });
+      const runtimeState = getOrCreateRuntimeState(binding.id);
+      if (!shouldForgejoRetry(runtimeState)) {
+        logger.info("skipping pull: retry backoff not elapsed", logContext);
+        return { tasks: [] };
+      }
 
-      const pullCommentsResult = await pullComments({
-        binding,
-        issueClient,
-        target,
-        itemLinkStore: linkStore,
-        commentLinkStore,
-      });
+      bindingStatuses.set(
+        binding.id,
+        updateForgejoBindingStatusRunning(getOrCreateBindingStatus(binding.id))
+      );
+      logger.info("pull started", logContext);
 
-      return { tasks: lastPullResult.tasks, comments: pullCommentsResult.comments };
+      try {
+        loopPreventionStore.clearExpired(DEFAULT_LOOP_PREVENTION_MAX_AGE_MS);
+
+        lastPullResult = await bootstrapForgejoIssuesToTasks({
+          binding,
+          baseUrl: target.baseUrl,
+          apiBaseUrl: target.apiBaseUrl,
+          owner: target.owner,
+          repo: target.repo,
+          issueClient,
+          linkStore,
+          since: runtimeState.cursor ?? runtimeState.lastSuccessAt ?? undefined,
+        });
+
+        const pullCommentsResult = await pullComments({
+          binding,
+          issueClient,
+          target,
+          itemLinkStore: linkStore,
+          commentLinkStore,
+        });
+
+        const cursor = new Date().toISOString();
+        runtimeStore.save(recordForgejoSuccess(runtimeState, cursor));
+        bindingStatuses.set(
+          binding.id,
+          updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id))
+        );
+
+        logger.info("pull completed", {
+          ...logContext,
+          itemId: `${lastPullResult.tasks.length} tasks, ${pullCommentsResult.comments.length} comments`,
+        });
+
+        return { tasks: lastPullResult.tasks, comments: pullCommentsResult.comments };
+      } catch (error) {
+        const classification = classifyForgejoSyncError(error);
+        applyFailureState({
+          bindingId: binding.id,
+          runtimeState,
+          classification,
+          logContext,
+          direction: "pull",
+        });
+        throw error;
+      }
     },
     async push(binding, tasks, _project): Promise<SyncProviderPushResult> {
       const parsedBinding = validateBinding(binding);
       const currentSettings = requireInitializedSettings();
       const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
+      const logContext = createLogContext(binding, parsedBinding, "push");
 
       if (binding.strategy === "none" || binding.strategy === "pull") {
         lastPushResult = {
@@ -188,40 +322,105 @@ export function createForgejoSyncProvider(
           createdLinks: [],
           taskUpdates: [],
         };
+        logger.debug("skipping push due to binding strategy", logContext);
         return { commentLinks: [], taskLinks: [] };
       }
 
-      lastPushResult = await bootstrapTasksToForgejoIssues({
-        binding,
-        baseUrl: target.baseUrl,
-        apiBaseUrl: target.apiBaseUrl,
-        owner: target.owner,
-        repo: target.repo,
-        tasks,
-        issueClient,
-        linkStore,
-      });
+      const runtimeState = getOrCreateRuntimeState(binding.id);
+      if (!shouldForgejoRetry(runtimeState)) {
+        logger.info("skipping push: retry backoff not elapsed", logContext);
+        return { commentLinks: [], taskLinks: [] };
+      }
 
-      const pushCommentsResult = await pushComments({
-        binding,
-        issueClient,
-        target,
-        tasks,
-        itemLinkStore: linkStore,
-        commentLinkStore,
-      });
+      bindingStatuses.set(
+        binding.id,
+        updateForgejoBindingStatusRunning(getOrCreateBindingStatus(binding.id))
+      );
+      logger.info("push started", logContext);
 
-      const pushResult = lastPushResult;
+      try {
+        loopPreventionStore.clearExpired(DEFAULT_LOOP_PREVENTION_MAX_AGE_MS);
 
-      return {
-        commentLinks: pushCommentsResult.commentLinks,
-        taskLinks: pushResult.createdLinks.map((link) => ({
-          localTaskId: link.taskId,
-          externalId: link.externalId,
-          sourceUrl: pushResult.taskUpdates.find((update) => update.taskId === link.taskId)
-            ?.sourceUrl,
-        })),
-      };
+        lastPushResult = await bootstrapTasksToForgejoIssues({
+          binding,
+          baseUrl: target.baseUrl,
+          apiBaseUrl: target.apiBaseUrl,
+          owner: target.owner,
+          repo: target.repo,
+          tasks,
+          issueClient,
+          linkStore,
+        });
+
+        for (const createdIssue of lastPushResult.createdIssues) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("issue", String(binding.id), String(createdIssue.number)),
+            createdIssue.updatedAt ?? new Date().toISOString()
+          );
+        }
+
+        for (const updatedIssue of lastPushResult.updatedIssues) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("issue", String(binding.id), String(updatedIssue.number)),
+            updatedIssue.updatedAt ?? new Date().toISOString()
+          );
+        }
+
+        const pushCommentsResult = await pushComments({
+          binding,
+          issueClient,
+          target,
+          tasks,
+          itemLinkStore: linkStore,
+          commentLinkStore,
+        });
+
+        for (const createdComment of pushCommentsResult.createdComments) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("comment", String(binding.id), String(createdComment.id)),
+            createdComment.updatedAt ?? createdComment.createdAt
+          );
+        }
+
+        for (const updatedComment of pushCommentsResult.updatedComments) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("comment", String(binding.id), String(updatedComment.id)),
+            updatedComment.updatedAt ?? updatedComment.createdAt
+          );
+        }
+
+        const cursor = new Date().toISOString();
+        runtimeStore.save(recordForgejoSuccess(runtimeState, cursor));
+        bindingStatuses.set(
+          binding.id,
+          updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id))
+        );
+
+        logger.info("push completed", {
+          ...logContext,
+          itemId: `${lastPushResult.createdIssues.length} created, ${lastPushResult.updatedIssues.length} updated`,
+        });
+
+        return {
+          commentLinks: pushCommentsResult.commentLinks,
+          taskLinks: lastPushResult.createdLinks.map((link) => ({
+            localTaskId: link.taskId,
+            externalId: link.externalId,
+            sourceUrl: lastPushResult?.taskUpdates.find((update) => update.taskId === link.taskId)
+              ?.sourceUrl,
+          })),
+        };
+      } catch (error) {
+        const classification = classifyForgejoSyncError(error);
+        applyFailureState({
+          bindingId: binding.id,
+          runtimeState,
+          classification,
+          logContext,
+          direction: "push",
+        });
+        throw error;
+      }
     },
     mapToTask(external: ExternalTask, project: Project): Task {
       return {
@@ -258,11 +457,49 @@ export function createForgejoSyncProvider(
         settings,
         itemLinks: linkStore.listAll(),
         commentLinks: commentLinkStore.listAll(),
+        runtimeStates: runtimeStore.listAll(),
+        loopPreventionWrites: loopPreventionStore.listAll(),
+        logEntries: logger.getEntries(),
         lastPullResult,
         lastPushResult,
+        bindingStatuses: new Map(bindingStatuses),
       };
     },
   };
+
+  function applyFailureState(input: {
+    bindingId: IntegrationBinding["id"];
+    runtimeState: ForgejoBindingRuntimeState;
+    classification: ForgejoSyncErrorClassification;
+    logContext: ForgejoSyncLogContext;
+    direction: "pull" | "push";
+  }): void {
+    const { classification, runtimeState, bindingId, logContext } = input;
+    const status = getOrCreateBindingStatus(bindingId);
+
+    if (classification.retryable) {
+      runtimeStore.save(recordForgejoFailure(runtimeState, classification.summary, retryConfig));
+      bindingStatuses.set(
+        bindingId,
+        updateForgejoBindingStatusError(status, classification.summary)
+      );
+      logger.error(`${input.direction} failed`, logContext, classification.summary);
+      return;
+    }
+
+    runtimeStore.save({
+      ...runtimeState,
+      nextRetryAt: null,
+      retryAttempt: 0,
+      lastError: classification.summary,
+      lastAttemptAt: new Date().toISOString(),
+    });
+    bindingStatuses.set(
+      bindingId,
+      updateForgejoBindingStatusBlocked(status, classification.summary)
+    );
+    logger.warn(`${input.direction} blocked`, logContext);
+  }
 }
 
 export const forgejoProvider = createForgejoSyncProvider();
@@ -275,6 +512,42 @@ export const syncProvider: SyncProviderRegistration = {
   },
   provider: forgejoProvider,
 };
+
+export interface ForgejoSyncErrorClassification {
+  kind: "auth" | "permission" | "not-found" | "rate-limit" | "server" | "transport" | "unknown";
+  retryable: boolean;
+  summary: string;
+}
+
+export function classifyForgejoSyncError(error: unknown): ForgejoSyncErrorClassification {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/\b401\b/.test(message)) {
+    return { kind: "auth", retryable: false, summary: `authentication failed: ${message}` };
+  }
+
+  if (/\b403\b/.test(message)) {
+    return { kind: "permission", retryable: false, summary: `permission denied: ${message}` };
+  }
+
+  if (/\b404\b/.test(message)) {
+    return { kind: "not-found", retryable: false, summary: `resource not found: ${message}` };
+  }
+
+  if (/\b429\b/.test(message) || /rate limit/i.test(message)) {
+    return { kind: "rate-limit", retryable: true, summary: `rate limited: ${message}` };
+  }
+
+  if (/\b5\d\d\b/.test(message)) {
+    return { kind: "server", retryable: true, summary: `server error: ${message}` };
+  }
+
+  if (/(network|fetch failed|timed out|timeout|econn|socket|enotfound|eai_again)/i.test(message)) {
+    return { kind: "transport", retryable: true, summary: `transport error: ${message}` };
+  }
+
+  return { kind: "unknown", retryable: true, summary: message };
+}
 
 function normalizeTaskStatus(status: string | undefined): Task["status"] {
   if (status === "done" || status === "canceled") {

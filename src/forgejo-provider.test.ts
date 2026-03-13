@@ -1,9 +1,18 @@
-import { createIntegrationBindingId, createProjectId, type IntegrationBinding } from "@todu/core";
+import {
+  createIntegrationBindingId,
+  createProjectId,
+  createTaskId,
+  type IntegrationBinding,
+  type TaskPushPayload,
+} from "@todu/core";
 
 import { FORGEJO_PROVIDER_NAME, FORGEJO_REPOSITORY_TARGET_KIND } from "@/forgejo-binding";
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
+import { createForgejoSyncLogger } from "@/forgejo-logger";
 import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
-import { createForgejoSyncProvider } from "@/forgejo-provider";
+import { createForgejoLoopPreventionStore } from "@/forgejo-loop-prevention";
+import { classifyForgejoSyncError, createForgejoSyncProvider } from "@/forgejo-provider";
+import { createInMemoryForgejoBindingRuntimeStore } from "@/forgejo-runtime";
 
 function createBinding(overrides: Partial<IntegrationBinding> = {}): IntegrationBinding {
   return {
@@ -104,5 +113,307 @@ describe("forgejo provider", () => {
     expect(task.id).toBe("forgejo:https://code.example.com/acme/roadmap#42");
     expect(task.status).toBe("active");
     expect(task.priority).toBe("medium");
+  });
+});
+
+describe("forgejo provider runtime integration", () => {
+  const target = {
+    baseUrl: "https://code.example.com",
+    apiBaseUrl: "https://code.example.com/api/v1",
+    owner: "acme",
+    repo: "roadmap",
+  };
+
+  it("records success in runtime store after a successful pull", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 1,
+        externalId: "https://code.example.com/acme/roadmap#1",
+        title: "Issue",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+    await provider.pull(createBinding(), project);
+
+    const state = runtimeStore.get(createBinding().id);
+    expect(state).not.toBeNull();
+    expect(state!.retryAttempt).toBe(0);
+    expect(state!.lastSuccessAt).not.toBeNull();
+    expect(state!.cursor).not.toBeNull();
+    expect(state!.lastError).toBeNull();
+  });
+
+  it("records failure in runtime store when pull throws", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.listIssues = async () => {
+      throw new Error("Forgejo API GET /repos/acme/roadmap/issues failed: 429 slow down");
+    };
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow("429 slow down");
+
+    const state = runtimeStore.get(createBinding().id);
+    expect(state).not.toBeNull();
+    expect(state!.retryAttempt).toBe(1);
+    expect(state!.lastError).toContain("rate limited");
+    expect(state!.nextRetryAt).not.toBeNull();
+  });
+
+  it("skips pull when retry backoff has not elapsed", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 1,
+        externalId: "https://code.example.com/acme/roadmap#1",
+        title: "Issue",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    const originalListIssues = issueClient.listIssues.bind(issueClient);
+    let callCount = 0;
+    issueClient.listIssues = async (bindingTarget, options) => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("transient network failure");
+      }
+
+      return originalListIssues(bindingTarget, options);
+    };
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+      retryConfig: { initialSeconds: 3600, maxSeconds: 3600 },
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow();
+
+    const result = await provider.pull(createBinding(), project);
+    expect(result.tasks).toEqual([]);
+    expect(callCount).toBe(1);
+  });
+
+  it("records loop prevention writes during push", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const loopPreventionStore = createForgejoLoopPreventionStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      loopPreventionStore,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    const tasks: TaskPushPayload[] = [
+      {
+        id: createTaskId("task-loop"),
+        title: "Loop test",
+        description: "",
+        status: "active",
+        priority: "medium",
+        projectId: createBinding().projectId,
+        labels: [],
+        assignees: [],
+        comments: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ];
+
+    await provider.push(createBinding(), tasks, project);
+
+    const writes = loopPreventionStore.listAll();
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes[0].key).toContain("issue:");
+  });
+
+  it("updates binding status through running to idle on success", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 1,
+        externalId: "https://code.example.com/acme/roadmap#1",
+        title: "Issue",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+    await provider.pull(createBinding(), project);
+
+    const status = provider.getState().bindingStatuses.get(createBinding().id);
+    expect(status).toBeDefined();
+    expect(status!.state).toBe("idle");
+    expect(status!.lastSuccessAt).not.toBeNull();
+  });
+
+  it("updates binding status to blocked on auth failures", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.listIssues = async () => {
+      throw new Error("Forgejo API GET /repos/acme/roadmap/issues failed: 401 unauthorized");
+    };
+
+    const logger = createForgejoSyncLogger();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      logger,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow();
+
+    const status = provider.getState().bindingStatuses.get(createBinding().id);
+    expect(status).toBeDefined();
+    expect(status!.state).toBe("blocked");
+    expect(status!.lastErrorSummary).toContain("authentication failed");
+    expect(logger.getEntries().at(-1)?.message).toBe("pull blocked");
+  });
+
+  it("resets retry state after a successful cycle following a failure", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 1,
+        externalId: "https://code.example.com/acme/roadmap#1",
+        title: "Issue",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    let shouldFail = true;
+    const originalListIssues = issueClient.listIssues.bind(issueClient);
+    issueClient.listIssues = async (bindingTarget, options) => {
+      if (shouldFail) {
+        throw new Error("Forgejo API GET /repos/acme/roadmap/issues failed: 500 server error");
+      }
+
+      return originalListIssues(bindingTarget, options);
+    };
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+      retryConfig: { initialSeconds: 0, maxSeconds: 0 },
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow();
+
+    const failedState = runtimeStore.get(createBinding().id);
+    expect(failedState!.retryAttempt).toBe(1);
+
+    shouldFail = false;
+    await provider.pull(createBinding(), project);
+
+    const successState = runtimeStore.get(createBinding().id);
+    expect(successState!.retryAttempt).toBe(0);
+    expect(successState!.lastError).toBeNull();
+    expect(successState!.lastSuccessAt).not.toBeNull();
+  });
+});
+
+describe("classifyForgejoSyncError", () => {
+  it("classifies auth, permission, rate limit, server, and transport failures", () => {
+    expect(classifyForgejoSyncError(new Error("401 unauthorized"))).toMatchObject({
+      kind: "auth",
+      retryable: false,
+    });
+    expect(classifyForgejoSyncError(new Error("403 forbidden"))).toMatchObject({
+      kind: "permission",
+      retryable: false,
+    });
+    expect(classifyForgejoSyncError(new Error("429 rate limit"))).toMatchObject({
+      kind: "rate-limit",
+      retryable: true,
+    });
+    expect(classifyForgejoSyncError(new Error("500 internal server error"))).toMatchObject({
+      kind: "server",
+      retryable: true,
+    });
+    expect(classifyForgejoSyncError(new Error("network timeout"))).toMatchObject({
+      kind: "transport",
+      retryable: true,
+    });
   });
 });
