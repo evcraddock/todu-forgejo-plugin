@@ -275,6 +275,7 @@ export function createForgejoSyncProvider(
           issueClient,
           linkStore,
           since: runtimeState.cursor ?? runtimeState.lastSuccessAt ?? undefined,
+          importClosedOnBootstrap: getImportClosedOnBootstrap(binding),
         });
 
         const pullCommentsResult = await pullComments({
@@ -523,6 +524,10 @@ export interface ForgejoSyncErrorClassification {
   kind: "auth" | "permission" | "not-found" | "rate-limit" | "server" | "transport" | "unknown";
   retryable: boolean;
   summary: string;
+}
+
+export function getImportClosedOnBootstrap(binding: IntegrationBinding): boolean {
+  return binding.options?.importClosedOnBootstrap === true;
 }
 
 export function classifyForgejoSyncError(error: unknown): ForgejoSyncErrorClassification {

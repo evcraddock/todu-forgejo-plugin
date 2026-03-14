@@ -242,6 +242,99 @@ describe("bootstrap status transitions", () => {
     expect(result.tasks[0].status).toBe("canceled");
   });
 
+  it("skips unlinked closed issues during initial bootstrap by default", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 1,
+        externalId: "https://code.example.com/acme/roadmap#1",
+        title: "Closed issue",
+        state: "closed",
+        labels: ["status:done"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    const result = await bootstrapForgejoIssuesToTasks({
+      binding,
+      ...target,
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.tasks).toHaveLength(0);
+    expect(result.createdLinks).toHaveLength(0);
+  });
+
+  it("imports unlinked closed issues during initial bootstrap when opt-in is enabled", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 1,
+        externalId: "https://code.example.com/acme/roadmap#1",
+        title: "Canceled issue",
+        state: "closed",
+        labels: ["status:canceled", "priority:high"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    const result = await bootstrapForgejoIssuesToTasks({
+      binding,
+      ...target,
+      issueClient,
+      linkStore,
+      importClosedOnBootstrap: true,
+    });
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0]).toMatchObject({
+      title: "Canceled issue",
+      status: "canceled",
+      priority: "high",
+    });
+    expect(result.createdLinks).toHaveLength(1);
+    expect(linkStore.getByIssueNumber(binding.id, 1)).not.toBeNull();
+  });
+
+  it("does not import newly seen closed issues during incremental pull even when opt-in is enabled", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 1,
+        externalId: "https://code.example.com/acme/roadmap#1",
+        title: "Closed issue",
+        state: "closed",
+        labels: ["status:done"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T02:00:00.000Z",
+      },
+    ]);
+
+    const result = await bootstrapForgejoIssuesToTasks({
+      binding,
+      ...target,
+      issueClient,
+      linkStore,
+      since: "2026-03-12T01:00:00.000Z",
+      importClosedOnBootstrap: true,
+    });
+
+    expect(result.tasks).toHaveLength(0);
+    expect(result.createdLinks).toHaveLength(0);
+  });
+
   it("skips done and canceled tasks during export (no new issue created)", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();

@@ -162,6 +162,64 @@ describe("forgejo provider runtime integration", () => {
     expect(state!.lastError).toBeNull();
   });
 
+  it("imports closed issues and their comments on initial bootstrap when the binding option is enabled", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Closed issue",
+        state: "closed",
+        labels: ["status:done", "priority:high"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 7, [
+      {
+        id: 11,
+        issueNumber: 7,
+        body: "Imported comment body",
+        author: "alice",
+        createdAt: "2026-03-12T01:30:00.000Z",
+        updatedAt: "2026-03-12T01:45:00.000Z",
+      },
+    ]);
+
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore: createInMemoryForgejoBindingRuntimeStore(),
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    const result = await provider.pull(
+      createBinding({ options: { importClosedOnBootstrap: true } }),
+      project
+    );
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0]).toMatchObject({
+      title: "Closed issue",
+      status: "done",
+      priority: "high",
+    });
+    expect(result.comments).toHaveLength(1);
+    expect(result.comments?.[0]).toMatchObject({
+      externalId: "11",
+      author: "alice",
+    });
+    expect(result.comments?.[0].body).toContain("Imported comment body");
+    expect(provider.getState().commentLinks).toHaveLength(1);
+  });
+
   it("records failure in runtime store when pull throws", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.listIssues = async () => {
