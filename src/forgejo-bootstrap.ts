@@ -51,6 +51,7 @@ export async function bootstrapForgejoIssuesToTasks(input: {
   issueClient: ForgejoIssueClient;
   linkStore: ForgejoItemLinkStore;
   since?: string;
+  importClosedOnBootstrap?: boolean;
 }): Promise<ForgejoBootstrapImportResult> {
   const issues = await input.issueClient.listIssues(
     {
@@ -64,6 +65,8 @@ export async function bootstrapForgejoIssuesToTasks(input: {
 
   const tasks: ExternalTask[] = [];
   const createdLinks: ForgejoItemLink[] = [];
+  const shouldImportClosedIssuesOnBootstrap =
+    input.importClosedOnBootstrap === true && !input.since;
 
   for (const issue of issues) {
     if (issue.isPullRequest) {
@@ -71,7 +74,7 @@ export async function bootstrapForgejoIssuesToTasks(input: {
     }
 
     const existingLink = input.linkStore.getByIssueNumber(input.binding.id, issue.number);
-    if (!existingLink && issue.state !== "open") {
+    if (!existingLink && issue.state !== "open" && !shouldImportClosedIssuesOnBootstrap) {
       continue;
     }
 
