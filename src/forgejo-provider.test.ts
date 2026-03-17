@@ -435,6 +435,61 @@ describe("forgejo provider runtime integration", () => {
     expect(writes[0].key).toContain("issue:");
   });
 
+  it("records closed orphaned issues in loop prevention and push summary logging", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 9,
+        externalId: "https://code.example.com/acme/roadmap#9",
+        title: "Deleted task issue",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    linkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-deleted"),
+      issueNumber: 9,
+      externalId: "https://code.example.com/acme/roadmap#9",
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+    });
+
+    const loopPreventionStore = createForgejoLoopPreventionStore();
+    const logger = createForgejoSyncLogger();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore,
+      loopPreventionStore,
+      logger,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await provider.push(createBinding(), [], project);
+
+    expect(provider.getState().lastPushResult).toMatchObject({
+      closedIssues: [expect.objectContaining({ number: 9, state: "closed" })],
+    });
+    expect(linkStore.getByTaskId(createBinding().id, createTaskId("task-deleted"))).toBeNull();
+    expect(loopPreventionStore.listAll()).toContainEqual(
+      expect.objectContaining({ key: `issue:${createBinding().id}:9` })
+    );
+    expect(logger.getEntries().at(-1)).toMatchObject({
+      message: "push completed",
+      context: expect.objectContaining({ itemId: expect.stringContaining("1 closed") }),
+    });
+  });
+
   it("reports skipped linked task push metrics without reading forgejo issues", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();

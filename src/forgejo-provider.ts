@@ -323,6 +323,7 @@ export function createForgejoSyncProvider(
         lastPushResult = {
           createdIssues: [],
           updatedIssues: [],
+          closedIssues: [],
           createdLinks: [],
           taskUpdates: [],
           hydratedLinkedTasks: 0,
@@ -384,6 +385,13 @@ export function createForgejoSyncProvider(
           );
         }
 
+        for (const closedIssue of lastPushResult.closedIssues) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("issue", String(binding.id), String(closedIssue.number)),
+            closedIssue.updatedAt ?? new Date().toISOString()
+          );
+        }
+
         const pushCommentsResult = await pushComments({
           binding,
           issueClient,
@@ -419,6 +427,7 @@ export function createForgejoSyncProvider(
           itemId:
             `${lastPushResult.createdIssues.length} created, ` +
             `${lastPushResult.updatedIssues.length} updated, ` +
+            `${lastPushResult.closedIssues.length} closed, ` +
             `${lastPushResult.skippedLinkedTasks} skipped, ` +
             `${lastPushResult.issueReadCount} issue reads, ` +
             `${pushCommentsResult.createdComments.length} comment creates, ` +

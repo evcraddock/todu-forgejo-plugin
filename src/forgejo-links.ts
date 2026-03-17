@@ -24,6 +24,7 @@ export interface ForgejoItemLinkStore {
   list(bindingId: IntegrationBinding["id"]): ForgejoItemLink[];
   listAll(): ForgejoItemLink[];
   save(link: ForgejoItemLink): void;
+  remove(bindingId: IntegrationBinding["id"], taskId: Task["id"]): void;
 }
 
 export function createInMemoryForgejoItemLinkStore(): ForgejoItemLinkStore {
@@ -62,8 +63,25 @@ export function createInMemoryForgejoItemLinkStore(): ForgejoItemLinkStore {
       return [...allLinks.values()];
     },
     save(link): void {
+      const existingByTask = links.get(getTaskKey(link.bindingId, link.taskId));
+      if (existingByTask) {
+        links.delete(getIssueKey(link.bindingId, existingByTask.issueNumber));
+      }
+
+      const existingByIssue = links.get(getIssueKey(link.bindingId, link.issueNumber));
+      if (existingByIssue) {
+        links.delete(getTaskKey(link.bindingId, existingByIssue.taskId));
+      }
+
       links.set(getTaskKey(link.bindingId, link.taskId), link);
       links.set(getIssueKey(link.bindingId, link.issueNumber), link);
+    },
+    remove(bindingId, taskId): void {
+      const link = links.get(getTaskKey(bindingId, taskId));
+      if (link) {
+        links.delete(getTaskKey(bindingId, taskId));
+        links.delete(getIssueKey(bindingId, link.issueNumber));
+      }
     },
   };
 }
@@ -123,6 +141,12 @@ export function createFileForgejoItemLinkStore(storagePath: string): ForgejoItem
           )
       );
       existingLinks.push(link);
+      writeLinks(existingLinks);
+    },
+    remove(bindingId, taskId): void {
+      const existingLinks = readLinks().filter(
+        (link) => !(link.bindingId === bindingId && link.taskId === taskId)
+      );
       writeLinks(existingLinks);
     },
   };
