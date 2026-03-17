@@ -12,6 +12,7 @@ export interface ForgejoItemLink {
   taskId: Task["id"];
   issueNumber: number;
   externalId: string;
+  lastMirroredAt?: string;
 }
 
 export interface ForgejoItemLinkStore {
@@ -146,6 +147,7 @@ export function createLinkFromIssue(input: {
     taskId: createImportedTaskId(externalId),
     issueNumber: input.issue.number,
     externalId,
+    lastMirroredAt: input.issue.updatedAt ?? input.issue.createdAt,
   };
 }
 
@@ -156,6 +158,7 @@ export function createLinkFromTask(input: {
   owner: string;
   repo: string;
   issueNumber: number;
+  lastMirroredAt?: string;
 }): ForgejoItemLink {
   return {
     bindingId: input.binding.id,
@@ -167,5 +170,6 @@ export function createLinkFromTask(input: {
       repo: input.repo,
       issueNumber: input.issueNumber,
     }),
+    ...(input.lastMirroredAt ? { lastMirroredAt: input.lastMirroredAt } : {}),
   };
 }

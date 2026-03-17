@@ -323,6 +323,9 @@ export function createForgejoSyncProvider(
           updatedIssues: [],
           createdLinks: [],
           taskUpdates: [],
+          hydratedLinkedTasks: 0,
+          issueReadCount: 0,
+          skippedLinkedTasks: 0,
         };
         logger.debug("skipping push due to binding strategy", logContext);
         return { commentLinks: [], taskLinks: [] };
@@ -411,7 +414,13 @@ export function createForgejoSyncProvider(
 
         logger.info("push completed", {
           ...logContext,
-          itemId: `${lastPushResult.createdIssues.length} created, ${lastPushResult.updatedIssues.length} updated`,
+          itemId:
+            `${lastPushResult.createdIssues.length} created, ` +
+            `${lastPushResult.updatedIssues.length} updated, ` +
+            `${lastPushResult.skippedLinkedTasks} skipped, ` +
+            `${lastPushResult.issueReadCount} issue reads, ` +
+            `${pushCommentsResult.createdComments.length} comment creates, ` +
+            `${pushCommentsResult.updatedComments.length} comment updates`,
         });
 
         return {

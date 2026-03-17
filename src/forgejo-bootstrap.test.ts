@@ -78,9 +78,10 @@ describe("forgejo bootstrap", () => {
     expect(result.tasks[0].labels).toEqual(["bug"]);
     expect(result.tasks[0].assignees).toEqual(["erik"]);
     expect(result.createdLinks).toHaveLength(1);
-    expect(linkStore.getByIssueNumber(binding.id, 1)?.externalId).toBe(
-      "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#1"
-    );
+    expect(linkStore.getByIssueNumber(binding.id, 1)).toMatchObject({
+      externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#1",
+      lastMirroredAt: "2026-03-12T00:00:00.000Z",
+    });
   });
 
   it("exports active tasks to forgejo with normalized fields and creates missing labels", async () => {
@@ -130,6 +131,7 @@ describe("forgejo bootstrap", () => {
     expect(result.createdIssues[0].labels).toEqual(["bug", "status:active", "priority:high"]);
     expect(issueClient.snapshotLabels(target)).toContain("bug");
     expect(result.createdLinks).toHaveLength(1);
+    expect(result.createdLinks[0].lastMirroredAt).toBeDefined();
     expect(tasks[0].externalId).toBeDefined();
     expect(tasks[0].sourceUrl).toBe(
       "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test/issues/1"
@@ -190,7 +192,169 @@ describe("forgejo bootstrap", () => {
       "priority:medium",
     ]);
     expect(issueClient.snapshotLabels(target)).toContain("needs-review");
-    expect(linkStore.getByTaskId(binding.id, tasks[0].id)?.issueNumber).toBe(7);
+    expect(linkStore.getByTaskId(binding.id, tasks[0].id)).toMatchObject({
+      issueNumber: 7,
+      lastMirroredAt: expect.any(String),
+    });
     expect(parseForgejoIssueExternalId(tasks[0].externalId!).issueNumber).toBe(7);
+  });
+
+  it("skips unchanged linked tasks without reading forgejo issues", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    linkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-7"),
+      issueNumber: 7,
+      externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+      lastMirroredAt: "2026-03-12T02:00:00.000Z",
+    });
+
+    let getIssueCalls = 0;
+    issueClient.getIssue = async () => {
+      getIssueCalls += 1;
+      throw new Error("getIssue should not be called for unchanged linked tasks");
+    };
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      baseUrl: target.baseUrl,
+      apiBaseUrl: target.apiBaseUrl,
+      owner: target.owner,
+      repo: target.repo,
+      tasks: [
+        {
+          id: createTaskId("task-7"),
+          title: "Unchanged title",
+          description: "Unchanged body",
+          status: "active",
+          priority: "medium",
+          projectId: binding.projectId,
+          labels: [],
+          assignees: [],
+          comments: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+          updatedAt: "2026-03-12T01:00:00.000Z",
+        },
+      ],
+      issueClient,
+      linkStore,
+    });
+
+    expect(getIssueCalls).toBe(0);
+    expect(result).toMatchObject({
+      issueReadCount: 0,
+      skippedLinkedTasks: 1,
+      updatedIssues: [],
+    });
+  });
+
+  it("hydrates older linked tasks once before deciding whether to skip push", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+        title: "Existing issue",
+        body: "Existing body",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T02:00:00.000Z",
+      },
+    ]);
+    linkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-7"),
+      issueNumber: 7,
+      externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+    });
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      baseUrl: target.baseUrl,
+      apiBaseUrl: target.apiBaseUrl,
+      owner: target.owner,
+      repo: target.repo,
+      tasks: [
+        {
+          id: createTaskId("task-7"),
+          title: "Older task",
+          description: "Existing body",
+          status: "active",
+          priority: "medium",
+          projectId: binding.projectId,
+          labels: [],
+          assignees: [],
+          comments: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+          updatedAt: "2026-03-12T01:00:00.000Z",
+        },
+      ],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result).toMatchObject({
+      hydratedLinkedTasks: 1,
+      issueReadCount: 1,
+      skippedLinkedTasks: 1,
+      updatedIssues: [],
+    });
+    expect(linkStore.getByTaskId(binding.id, createTaskId("task-7"))?.lastMirroredAt).toBe(
+      "2026-03-12T02:00:00.000Z"
+    );
+  });
+
+  it("checks forgejo labels once per push cycle", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    let listLabelsCalls = 0;
+    const originalListLabels = issueClient.listLabels.bind(issueClient);
+    issueClient.listLabels = async (...args) => {
+      listLabelsCalls += 1;
+      return originalListLabels(...args);
+    };
+
+    await bootstrapTasksToForgejoIssues({
+      binding,
+      baseUrl: target.baseUrl,
+      apiBaseUrl: target.apiBaseUrl,
+      owner: target.owner,
+      repo: target.repo,
+      tasks: [
+        {
+          id: createTaskId("task-a"),
+          title: "Task A",
+          description: "A",
+          status: "active",
+          priority: "medium",
+          projectId: binding.projectId,
+          labels: ["bug"],
+          assignees: [],
+          comments: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+          updatedAt: "2026-03-12T01:00:00.000Z",
+        },
+        {
+          id: createTaskId("task-b"),
+          title: "Task B",
+          description: "B",
+          status: "active",
+          priority: "high",
+          projectId: binding.projectId,
+          labels: ["feature"],
+          assignees: [],
+          comments: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+          updatedAt: "2026-03-12T01:00:00.000Z",
+        },
+      ],
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+    });
+
+    expect(listLabelsCalls).toBe(1);
   });
 });
