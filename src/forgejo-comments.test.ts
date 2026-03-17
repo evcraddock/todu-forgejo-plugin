@@ -171,6 +171,88 @@ describe("forgejo comments", () => {
     expect(commentLinkStore.getByForgejoCommentId(binding.id, 11)).toBeNull();
   });
 
+  it("supports since-based comment pulls and touched issue filtering", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const itemLinkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-7"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+      })
+    );
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-8"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 8,
+      })
+    );
+
+    commentLinkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-7"),
+      noteId: createNoteId("external:11"),
+      issueNumber: 7,
+      forgejoCommentId: 11,
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Older body",
+    });
+
+    issueClient.seedComments(target, 7, [
+      {
+        id: 11,
+        issueNumber: 7,
+        body: "Older body",
+        author: "alice",
+        createdAt: "2026-03-12T01:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+      {
+        id: 12,
+        issueNumber: 7,
+        body: "Newer body",
+        author: "alice",
+        createdAt: "2026-03-12T03:00:00.000Z",
+        updatedAt: "2026-03-12T03:00:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 8, [
+      {
+        id: 21,
+        issueNumber: 8,
+        body: "Other issue body",
+        author: "bob",
+        createdAt: "2026-03-12T04:00:00.000Z",
+        updatedAt: "2026-03-12T04:00:00.000Z",
+      },
+    ]);
+
+    const result = await pullComments({
+      binding,
+      issueClient,
+      target,
+      itemLinkStore,
+      commentLinkStore,
+      issueNumbers: [7],
+      since: "2026-03-12T02:00:00.000Z",
+    });
+
+    expect(result.comments).toHaveLength(1);
+    expect(result.comments[0].externalId).toBe("12");
+    expect(result.deletedLinks).toEqual([]);
+    expect(commentLinkStore.getByForgejoCommentId(binding.id, 11)).not.toBeNull();
+    expect(commentLinkStore.getByForgejoCommentId(binding.id, 21)).toBeNull();
+  });
+
   it("pushes local notes to forgejo, updates linked comments, and deletes removed comments", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const itemLinkStore = createInMemoryForgejoItemLinkStore();

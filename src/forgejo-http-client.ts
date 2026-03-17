@@ -7,6 +7,7 @@ import {
   type ForgejoIssue,
   type ForgejoIssueClient,
   type ForgejoRepositoryTarget,
+  type ListForgejoCommentsOptions,
   type ListForgejoIssuesOptions,
   type UpdateForgejoIssueInput,
 } from "@/forgejo-client";
@@ -300,9 +301,14 @@ export function createHttpForgejoIssueClient(
 
     async listComments(
       target: ForgejoRepositoryTarget,
-      issueNumber: number
+      issueNumber: number,
+      options?: ListForgejoCommentsOptions
     ): Promise<ForgejoComment[]> {
-      const path = `/repos/${target.owner}/${target.repo}/issues/${issueNumber}/comments`;
+      let path = `/repos/${target.owner}/${target.repo}/issues/${issueNumber}/comments`;
+      if (options?.since) {
+        path += `?since=${encodeURIComponent(options.since)}`;
+      }
+
       const rawComments = await listAllPages<ForgejoApiComment>(target, path);
       return rawComments.map((rawComment) => mapApiComment(target, issueNumber, rawComment));
     },

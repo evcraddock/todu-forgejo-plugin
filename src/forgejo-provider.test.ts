@@ -220,6 +220,103 @@ describe("forgejo provider runtime integration", () => {
     expect(provider.getState().commentLinks).toHaveLength(1);
   });
 
+  it("limits incremental comment pulls to touched issues", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+      {
+        number: 8,
+        externalId: "https://code.example.com/acme/roadmap#8",
+        title: "Issue eight",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 7, [
+      {
+        id: 11,
+        issueNumber: 7,
+        body: "Comment seven",
+        author: "alice",
+        createdAt: "2026-03-12T01:30:00.000Z",
+        updatedAt: "2026-03-12T01:30:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 8, [
+      {
+        id: 21,
+        issueNumber: 8,
+        body: "Comment eight",
+        author: "bob",
+        createdAt: "2026-03-12T01:30:00.000Z",
+        updatedAt: "2026-03-12T01:30:00.000Z",
+      },
+    ]);
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await provider.pull(createBinding(), project);
+
+    const updatedAtAfterFirstPull = new Date(Date.now() + 60_000).toISOString();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven updated",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: updatedAtAfterFirstPull,
+      },
+      {
+        number: 8,
+        externalId: "https://code.example.com/acme/roadmap#8",
+        title: "Issue eight",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    const listCommentsCalls: number[] = [];
+    const originalListComments = issueClient.listComments.bind(issueClient);
+    issueClient.listComments = async (bindingTarget, issueNumber, options) => {
+      listCommentsCalls.push(issueNumber);
+      return originalListComments(bindingTarget, issueNumber, options);
+    };
+
+    await provider.pull(createBinding(), project);
+
+    expect(listCommentsCalls).toEqual([7]);
+  });
+
   it("records failure in runtime store when pull throws", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.listIssues = async () => {
