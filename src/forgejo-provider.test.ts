@@ -336,6 +336,59 @@ describe("forgejo provider runtime integration", () => {
     expect(writes[0].key).toContain("issue:");
   });
 
+  it("reports skipped linked task push metrics without reading forgejo issues", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    linkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-7"),
+      issueNumber: 7,
+      externalId: "https://code.example.com/acme/roadmap#7",
+      lastMirroredAt: "2026-03-12T02:00:00.000Z",
+    });
+
+    let getIssueCalls = 0;
+    issueClient.getIssue = async () => {
+      getIssueCalls += 1;
+      throw new Error("getIssue should not be called for unchanged linked tasks");
+    };
+
+    const provider = createForgejoSyncProvider({ issueClient, linkStore });
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await provider.push(
+      createBinding(),
+      [
+        {
+          id: createTaskId("task-7"),
+          title: "Unchanged task",
+          description: "",
+          status: "active",
+          priority: "medium",
+          projectId: createBinding().projectId,
+          labels: [],
+          assignees: [],
+          comments: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+          updatedAt: "2026-03-12T01:00:00.000Z",
+        },
+      ],
+      project
+    );
+
+    expect(getIssueCalls).toBe(0);
+    expect(provider.getState().lastPushResult).toMatchObject({
+      issueReadCount: 0,
+      skippedLinkedTasks: 1,
+      hydratedLinkedTasks: 0,
+    });
+  });
+
   it("uses loop prevention to skip repeated issue mirror writes", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [

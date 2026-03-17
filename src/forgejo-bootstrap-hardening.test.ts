@@ -397,6 +397,36 @@ describe("bootstrap status transitions", () => {
 
     expect(result.updatedIssues).toHaveLength(0);
   });
+
+  it("does not update a linked issue when task and mirror timestamps are equal", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    linkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-equal"),
+      issueNumber: 1,
+      externalId: "https://code.example.com/acme/roadmap#1",
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+    });
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      ...target,
+      tasks: [
+        createPushTask({
+          id: createTaskId("task-equal"),
+          title: "Changed title but equal timestamp",
+          externalId: "https://code.example.com/acme/roadmap#1",
+          updatedAt: "2026-03-12T01:00:00.000Z",
+        }),
+      ],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.updatedIssues).toHaveLength(0);
+    expect(result.skippedLinkedTasks).toBe(1);
+  });
 });
 
 describe("bootstrap pull request filtering", () => {
