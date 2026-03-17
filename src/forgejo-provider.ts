@@ -285,6 +285,7 @@ export function createForgejoSyncProvider(
           itemLinkStore: linkStore,
           commentLinkStore,
           issueNumbers: lastPullResult.touchedIssueNumbers,
+          since: runtimeState.lastSuccessAt ?? undefined,
         });
 
         const cursor = new Date().toISOString();

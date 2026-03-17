@@ -15,6 +15,7 @@ const FORGEJO_ATTRIBUTION_PREFIX = "_Synced from Forgejo comment by @";
 const TODU_ATTRIBUTION_PREFIX = "_Synced from todu comment by @";
 const ATTRIBUTION_SUFFIX_PATTERN = / on \d{4}-\d{2}-\d{2}T[\d:.]+Z_$/;
 const IMPORTED_COMMENT_LINK_PREFIX = "external:";
+const SYNC_EXTERNAL_ID_TAG_PREFIX = "sync:externalId:";
 
 export function formatForgejoAttribution(author: string, timestamp: string): string {
   return `_Synced from Forgejo comment by @${author} on ${timestamp}_`;
@@ -54,14 +55,13 @@ export function hasForgejoAttribution(body: string): boolean {
   );
 }
 
-function isImportedCommentLink(link: ForgejoCommentLink): boolean {
-  return (link.noteId as string).startsWith(IMPORTED_COMMENT_LINK_PREFIX);
+function hasImportedForgejoSyncTag(note: Note): boolean {
+  return note.tags.some((tag) => tag.startsWith(SYNC_EXTERNAL_ID_TAG_PREFIX));
 }
 
 export interface PullCommentsResult {
   comments: ExternalComment[];
   createdLinks: ForgejoCommentLink[];
-  deletedLinks: ForgejoCommentLink[];
 }
 
 export async function pullComments(input: {
@@ -80,7 +80,6 @@ export async function pullComments(input: {
 }): Promise<PullCommentsResult> {
   const comments: ExternalComment[] = [];
   const createdLinks: ForgejoCommentLink[] = [];
-  const deletedLinks: ForgejoCommentLink[] = [];
 
   const issueNumbers = input.issueNumbers ? new Set(input.issueNumbers) : null;
   const itemLinks = input.itemLinkStore
@@ -93,24 +92,6 @@ export async function pullComments(input: {
       itemLink.issueNumber,
       input.since ? { since: input.since } : undefined
     );
-    const existingCommentLinks = input.commentLinkStore.listByIssue(
-      input.binding.id,
-      itemLink.issueNumber
-    );
-
-    if (!input.since) {
-      const forgejoCommentIds = new Set(forgejoComments.map((comment) => comment.id));
-
-      for (const commentLink of existingCommentLinks) {
-        if (!forgejoCommentIds.has(commentLink.forgejoCommentId)) {
-          input.commentLinkStore.removeByForgejoCommentId(
-            input.binding.id,
-            commentLink.forgejoCommentId
-          );
-          deletedLinks.push(commentLink);
-        }
-      }
-    }
 
     for (const forgejoComment of forgejoComments) {
       const strippedBody = stripAttribution(forgejoComment.body);
@@ -157,14 +138,13 @@ export async function pullComments(input: {
     }
   }
 
-  return { comments, createdLinks, deletedLinks };
+  return { comments, createdLinks };
 }
 
 export interface PushCommentsResult {
   commentLinks: SyncProviderPushCommentLink[];
   createdComments: ForgejoComment[];
   updatedComments: ForgejoComment[];
-  deletedCommentIds: number[];
 }
 
 export async function pushComments(input: {
@@ -183,7 +163,6 @@ export async function pushComments(input: {
   const commentLinks: SyncProviderPushCommentLink[] = [];
   const createdComments: ForgejoComment[] = [];
   const updatedComments: ForgejoComment[] = [];
-  const deletedCommentIds: number[] = [];
 
   for (const task of input.tasks) {
     const itemLink = input.itemLinkStore.getByTaskId(input.binding.id, task.id);
@@ -191,67 +170,46 @@ export async function pushComments(input: {
       continue;
     }
 
-    const remoteComments = await input.issueClient.listComments(input.target, itemLink.issueNumber);
-    const remoteCommentsById = new Map(remoteComments.map((comment) => [comment.id, comment]));
-    const existingCommentLinks = input.commentLinkStore.listByTask(input.binding.id, task.id);
-    const currentNoteIds = new Set(task.comments.map((comment) => comment.id));
-
-    for (const commentLink of existingCommentLinks) {
-      if (!currentNoteIds.has(commentLink.noteId) && !isImportedCommentLink(commentLink)) {
-        await deleteForgejoComment(input, commentLink, deletedCommentIds);
-      }
-    }
+    const localTaskId = task.id;
 
     for (const note of task.comments) {
       const existingLink = input.commentLinkStore.getByNoteId(input.binding.id, note.id);
 
-      if (!existingLink) {
-        if (hasForgejoAttribution(note.content)) {
-          continue;
-        }
+      if (
+        !existingLink &&
+        (hasForgejoAttribution(note.content) || hasImportedForgejoSyncTag(note))
+      ) {
+        continue;
+      }
 
-        const createdComment = await createForgejoCommentFromNote(
+      if (existingLink) {
+        const updated = await updateForgejoCommentIfNeeded(
+          input,
+          note,
+          existingLink,
+          itemLink,
+          updatedComments
+        );
+        commentLinks.push(
+          createPushCommentLink(note.id, localTaskId, existingLink.forgejoCommentId, updated)
+        );
+      } else {
+        const created = await createForgejoCommentFromNote(
           input,
           note,
           task,
           itemLink,
           createdComments
         );
-        commentLinks.push(
-          createPushCommentLink(note.id, String(task.id), createdComment.id, createdComment)
-        );
-        continue;
+        commentLinks.push(createPushCommentLink(note.id, localTaskId, created.id, created));
       }
-
-      const updatedComment = await syncExistingForgejoComment({
-        binding: input.binding,
-        issueClient: input.issueClient,
-        target: input.target,
-        task,
-        note,
-        itemLink,
-        existingLink,
-        remoteComment: remoteCommentsById.get(existingLink.forgejoCommentId) ?? null,
-        commentLinkStore: input.commentLinkStore,
-        updatedComments,
-        createdComments,
-      });
-
-      commentLinks.push(
-        createPushCommentLink(
-          note.id,
-          String(task.id),
-          updatedComment?.id ?? existingLink.forgejoCommentId,
-          updatedComment
-        )
-      );
     }
   }
 
-  return { commentLinks, createdComments, updatedComments, deletedCommentIds };
+  return { commentLinks, createdComments, updatedComments };
 }
 
-async function deleteForgejoComment(
+async function updateForgejoCommentIfNeeded(
   input: {
     binding: IntegrationBinding;
     issueClient: ForgejoIssueClient;
@@ -263,101 +221,43 @@ async function deleteForgejoComment(
     };
     commentLinkStore: ForgejoCommentLinkStore;
   },
-  commentLink: ForgejoCommentLink,
-  deletedCommentIds: number[]
-): Promise<void> {
-  try {
-    await input.issueClient.deleteComment(input.target, commentLink.forgejoCommentId);
-  } catch {
-    // Comment may already be deleted remotely; proceed with local link cleanup.
-  }
-
-  input.commentLinkStore.remove(input.binding.id, commentLink.noteId);
-  deletedCommentIds.push(commentLink.forgejoCommentId);
-}
-
-async function syncExistingForgejoComment(input: {
-  binding: IntegrationBinding;
-  issueClient: ForgejoIssueClient;
-  target: {
-    baseUrl: string;
-    apiBaseUrl: string;
-    owner: string;
-    repo: string;
-  };
-  task: TaskPushPayload;
-  note: Note;
-  itemLink: ForgejoItemLink;
-  existingLink: ForgejoCommentLink;
-  remoteComment: ForgejoComment | null;
-  commentLinkStore: ForgejoCommentLinkStore;
-  updatedComments: ForgejoComment[];
-  createdComments: ForgejoComment[];
-}): Promise<ForgejoComment | null> {
-  const localBody = stripAttribution(input.note.content);
-  const remoteBody = input.remoteComment ? stripAttribution(input.remoteComment.body) : null;
-  const mirroredBody = input.existingLink.lastMirroredBody ?? remoteBody ?? localBody;
-  const localChanged = localBody !== mirroredBody;
-  const remoteChanged = remoteBody !== null && remoteBody !== mirroredBody;
-  const localObservedAt = getLocalObservedAt(input.note);
-
-  if (!localChanged) {
-    if (input.remoteComment && input.existingLink.lastMirroredBody !== remoteBody) {
-      input.commentLinkStore.save({
-        ...input.existingLink,
-        lastMirroredAt: input.remoteComment.updatedAt ?? input.remoteComment.createdAt,
-        lastMirroredBody: remoteBody ?? input.existingLink.lastMirroredBody,
-      });
-    }
-
-    return null;
-  }
+  note: Note,
+  existingLink: ForgejoCommentLink,
+  _itemLink: ForgejoItemLink,
+  updatedComments: ForgejoComment[]
+): Promise<ForgejoComment | null> {
+  const localBody = stripAttribution(note.content);
+  const mirroredBody = existingLink.lastMirroredBody ?? localBody;
+  const noteUpdatedAt = Date.parse(note.createdAt);
+  const lastMirroredAt = Date.parse(existingLink.lastMirroredAt);
 
   if (
-    input.remoteComment &&
-    remoteChanged &&
-    remoteWinsConflict(input.remoteComment, localObservedAt)
+    localBody === mirroredBody &&
+    !Number.isNaN(noteUpdatedAt) &&
+    !Number.isNaN(lastMirroredAt) &&
+    noteUpdatedAt <= lastMirroredAt
   ) {
-    input.commentLinkStore.save({
-      ...input.existingLink,
-      lastMirroredAt: input.remoteComment.updatedAt ?? input.remoteComment.createdAt,
-      lastMirroredBody: remoteBody ?? input.existingLink.lastMirroredBody,
-    });
     return null;
   }
 
-  if (!input.remoteComment) {
-    const recreatedComment = await createForgejoCommentFromNote(
-      {
-        binding: input.binding,
-        issueClient: input.issueClient,
-        target: input.target,
-        commentLinkStore: input.commentLinkStore,
-      },
-      input.note,
-      input.task,
-      input.itemLink,
-      input.createdComments,
-      input.existingLink
-    );
-
-    return recreatedComment;
+  if (localBody === mirroredBody) {
+    return null;
   }
 
   const attributedBody = formatAttributedBody(
-    formatToduAttribution(input.note.author, input.note.createdAt),
+    formatToduAttribution(note.author, note.createdAt),
     localBody
   );
 
   const updatedComment = await input.issueClient.updateComment(
     input.target,
-    input.existingLink.forgejoCommentId,
+    existingLink.forgejoCommentId,
     attributedBody
   );
 
-  input.updatedComments.push(updatedComment);
+  updatedComments.push(updatedComment);
   input.commentLinkStore.save({
-    ...input.existingLink,
+    ...existingLink,
     lastMirroredAt: updatedComment.updatedAt ?? updatedComment.createdAt,
     lastMirroredBody: localBody,
   });
@@ -380,8 +280,7 @@ async function createForgejoCommentFromNote(
   note: Note,
   task: TaskPushPayload,
   itemLink: ForgejoItemLink,
-  createdComments: ForgejoComment[],
-  existingLink?: ForgejoCommentLink
+  createdComments: ForgejoComment[]
 ): Promise<ForgejoComment> {
   const localBody = stripAttribution(note.content);
   const attributedBody = formatAttributedBody(
@@ -396,10 +295,6 @@ async function createForgejoCommentFromNote(
   );
 
   createdComments.push(createdComment);
-
-  if (existingLink) {
-    input.commentLinkStore.remove(input.binding.id, existingLink.noteId);
-  }
 
   input.commentLinkStore.save({
     bindingId: input.binding.id,
@@ -429,19 +324,4 @@ function createPushCommentLink(
     updatedAt: comment?.updatedAt,
     raw: comment,
   };
-}
-
-function getLocalObservedAt(note: Note): string {
-  return note.createdAt;
-}
-
-function remoteWinsConflict(remoteComment: ForgejoComment, localObservedAt: string): boolean {
-  const remoteObservedAt = Date.parse(remoteComment.updatedAt ?? remoteComment.createdAt);
-  const localObservedAtMs = Date.parse(localObservedAt);
-
-  if (Number.isNaN(remoteObservedAt) || Number.isNaN(localObservedAtMs)) {
-    return false;
-  }
-
-  return remoteObservedAt > localObservedAtMs;
 }

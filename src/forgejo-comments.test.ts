@@ -132,7 +132,7 @@ describe("forgejo comments", () => {
     });
   });
 
-  it("removes durable links for forgejo comments deleted remotely", async () => {
+  it("keeps durable links when forgejo comments are deleted remotely", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const itemLinkStore = createInMemoryForgejoItemLinkStore();
     const commentLinkStore = createInMemoryForgejoCommentLinkStore();
@@ -167,8 +167,8 @@ describe("forgejo comments", () => {
       commentLinkStore,
     });
 
-    expect(result.deletedLinks).toEqual([existingLink]);
-    expect(commentLinkStore.getByForgejoCommentId(binding.id, 11)).toBeNull();
+    expect(result).toMatchObject({ comments: [], createdLinks: [] });
+    expect(commentLinkStore.getByForgejoCommentId(binding.id, 11)).toEqual(existingLink);
   });
 
   it("supports since-based comment pulls and touched issue filtering", async () => {
@@ -248,12 +248,11 @@ describe("forgejo comments", () => {
 
     expect(result.comments).toHaveLength(1);
     expect(result.comments[0].externalId).toBe("12");
-    expect(result.deletedLinks).toEqual([]);
     expect(commentLinkStore.getByForgejoCommentId(binding.id, 11)).not.toBeNull();
     expect(commentLinkStore.getByForgejoCommentId(binding.id, 21)).toBeNull();
   });
 
-  it("pushes local notes to forgejo, updates linked comments, and deletes removed comments", async () => {
+  it("pushes local notes to forgejo, updates linked comments, and leaves removed comments alone", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const itemLinkStore = createInMemoryForgejoItemLinkStore();
     const commentLinkStore = createInMemoryForgejoCommentLinkStore();
@@ -282,7 +281,7 @@ describe("forgejo comments", () => {
       {
         id: 22,
         issueNumber: 7,
-        body: "Delete me",
+        body: "Keep me",
         author: "alice",
         createdAt: "2026-03-12T00:00:00.000Z",
         updatedAt: "2026-03-12T00:00:00.000Z",
@@ -316,7 +315,7 @@ describe("forgejo comments", () => {
       issueNumber: 7,
       forgejoCommentId: 22,
       lastMirroredAt: "2026-03-12T00:00:00.000Z",
-      lastMirroredBody: "Delete me",
+      lastMirroredBody: "Keep me",
     });
 
     const task = createTask(
@@ -339,6 +338,13 @@ describe("forgejo comments", () => {
       "2026-03-12T04:30:00.000Z"
     );
 
+    let listCommentsCalls = 0;
+    const originalListComments = issueClient.listComments.bind(issueClient);
+    issueClient.listComments = async (...args) => {
+      listCommentsCalls += 1;
+      return originalListComments(...args);
+    };
+
     const result = await pushComments({
       binding,
       issueClient,
@@ -348,6 +354,7 @@ describe("forgejo comments", () => {
       commentLinkStore,
     });
 
+    expect(listCommentsCalls).toBe(0);
     expect(result.updatedComments).toHaveLength(1);
     expect(result.updatedComments[0].id).toBe(21);
     expect(result.updatedComments[0].body).toBe(
@@ -357,14 +364,16 @@ describe("forgejo comments", () => {
     expect(result.createdComments[0].body).toBe(
       "_Synced from todu comment by @bob on 2026-03-12T04:00:00.000Z_\n\nBrand new local note"
     );
-    expect(result.deletedCommentIds).toEqual([22]);
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-new"))).toMatchObject({
       lastMirroredBody: "Brand new local note",
     });
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-existing"))).toMatchObject({
       lastMirroredBody: "Updated local body",
     });
-    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-delete"))).toBeNull();
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-delete"))).not.toBeNull();
+    expect(issueClient.snapshotComments(target, 7).map((comment) => comment.id)).toEqual([
+      21, 22, 23,
+    ]);
     expect(result.commentLinks).toHaveLength(2);
   });
 
@@ -450,7 +459,7 @@ describe("forgejo comments", () => {
     });
   });
 
-  it("lets newer remote comment changes win conflicts and ignores unlinked imported notes", async () => {
+  it("skips unchanged linked notes and ignores unlinked imported notes", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const itemLinkStore = createInMemoryForgejoItemLinkStore();
     const commentLinkStore = createInMemoryForgejoCommentLinkStore();
@@ -494,8 +503,8 @@ describe("forgejo comments", () => {
       noteId: createNoteId("external:21"),
       issueNumber: 7,
       forgejoCommentId: 21,
-      lastMirroredAt: "2026-03-12T01:00:00.000Z",
-      lastMirroredBody: "Imported body",
+      lastMirroredAt: "2026-03-12T05:00:00.000Z",
+      lastMirroredBody: "Remote changed body",
     });
 
     const task = createTask(
@@ -504,7 +513,7 @@ describe("forgejo comments", () => {
           id: createNoteId("external:21"),
           content: formatAttributedBody(
             formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
-            "Local conflicting edit"
+            "Remote changed body"
           ),
           author: "alice",
           tags: [],
@@ -535,7 +544,6 @@ describe("forgejo comments", () => {
 
     expect(result.updatedComments).toHaveLength(0);
     expect(result.createdComments).toHaveLength(0);
-    expect(result.deletedCommentIds).toHaveLength(0);
     expect(result.commentLinks).toHaveLength(1);
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("external:21"))).toMatchObject({
       lastMirroredBody: "Remote changed body",

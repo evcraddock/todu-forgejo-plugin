@@ -273,17 +273,17 @@ Keep the same logical stores as the GitHub plugin:
 
 ## Task / issue mapping
 
-| todu             | Forgejo                      | Notes                        |
-| ---------------- | ---------------------------- | ---------------------------- |
-| Task             | Issue                        | 1:1 link once bound          |
-| Title            | Title                        | bidirectional                |
-| Description      | Body                         | markdown on both sides       |
-| Status           | Issue state + reserved label | same scheme as GitHub plugin |
-| Priority         | Reserved label               | same scheme as GitHub plugin |
-| Labels           | Labels                       | non-reserved only            |
-| Comments / notes | Issue comments               | strict 1:1 mirror            |
-| Assignees        | Assignees                    | import only in v1            |
-| Due date         | none                         | stays local to todu          |
+| todu             | Forgejo                      | Notes                                          |
+| ---------------- | ---------------------------- | ---------------------------------------------- |
+| Task             | Issue                        | 1:1 link once bound                            |
+| Title            | Title                        | bidirectional                                  |
+| Description      | Body                         | markdown on both sides                         |
+| Status           | Issue state + reserved label | same scheme as GitHub plugin                   |
+| Priority         | Reserved label               | same scheme as GitHub plugin                   |
+| Labels           | Labels                       | non-reserved only                              |
+| Comments / notes | Issue comments               | mirrored create/edit; deletes do not propagate |
+| Assignees        | Assignees                    | import only in v1                              |
+| Due date         | none                         | stays local to todu                            |
 
 ## Status mapping
 
@@ -351,12 +351,12 @@ If an instance only supports one assignee, the plugin should treat it as a one-e
 
 ## Comments / notes
 
-Use the same strict mirrored model as `todu-github-plugin`:
+Use the same mirrored comment model as the current `todu-github-plugin`:
 
-- one Forgejo comment ↔ one todu note
+- one Forgejo comment ↔ one todu note when linked
 - create syncs both ways
 - edit syncs both ways
-- delete syncs both ways
+- mirrored comment deletes do not propagate in either direction
 
 Use visible attribution headers, unchanged except for the provider name:
 
@@ -425,8 +425,8 @@ Each polling cycle processes the binding according to strategy:
 - list issues updated since the last successful checkpoint
 - refresh linked item field state
 - discover newly created open issues
-- list comments for linked issues
-- mirror comment creates/edits/deletes into todu
+- list comments for changed linked issues, optionally constrained by a comment `since` checkpoint when deletion detection is not required
+- mirror comment creates/edits into todu
 - normalize reserved labels/state if needed
 
 ### Push path
@@ -434,7 +434,7 @@ Each polling cycle processes the binding according to strategy:
 - inspect local task changes supplied by the host
 - create issues for newly eligible unlinked tasks
 - update linked issues when task state wins conflict resolution
-- create/update/delete mirrored comments
+- create/update mirrored comments
 - update links and loop-prevention bookkeeping
 
 ## Conflict Resolution
@@ -462,7 +462,7 @@ Deletion or disappearance of the linked issue/task maps to cancelation:
 - Forgejo issue target becomes closed + `status:canceled`
 - todu task target becomes `canceled`
 
-Comments remain the exception: mirrored comment deletes propagate as hard deletes to preserve 1:1 comment state.
+Comments no longer remain the exception. Mirrored comment deletes do not propagate across systems. A deleted Forgejo comment or deleted todu note leaves the opposite side intact, which keeps steady-state sync incremental and avoids deletion-driven full comment scans.
 
 ## Polling, Retry, and Observability
 
@@ -771,7 +771,7 @@ The architecture is satisfied when the implementation can support all of the fol
 3. bootstrap imports open Forgejo issues and exports active/inprogress/waiting todu tasks
 4. linked items receive globally unique Forgejo-aware `external_id` values
 5. title/body/status/priority/labels sync bidirectionally according to the documented rules
-6. comments sync bidirectionally with strict 1:1 mirrored behavior
+6. comments sync bidirectionally for create/edit with non-propagating delete semantics
 7. Forgejo assignees import into todu
 8. polling, retry, and binding status behave independently per binding
 9. Forgejo-specific API/auth/rate-limit differences are isolated to config and client layers
