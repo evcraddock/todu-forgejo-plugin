@@ -27,6 +27,7 @@ const TASK_BOOTSTRAP_EXPORT_STATUSES = new Set<TaskPushPayload["status"]>([
 export interface ForgejoBootstrapImportResult {
   tasks: ExternalTask[];
   createdLinks: ForgejoItemLink[];
+  touchedIssueNumbers: number[];
 }
 
 export interface ForgejoBootstrapTaskUpdate {
@@ -68,6 +69,7 @@ export async function bootstrapForgejoIssuesToTasks(input: {
 
   const tasks: ExternalTask[] = [];
   const createdLinks: ForgejoItemLink[] = [];
+  const touchedIssueNumbers: number[] = [];
   const shouldImportClosedIssuesOnBootstrap =
     input.importClosedOnBootstrap === true && !input.since;
 
@@ -101,11 +103,13 @@ export async function bootstrapForgejoIssuesToTasks(input: {
     }
 
     tasks.push(mapForgejoIssueToExternalTask(issue));
+    touchedIssueNumbers.push(issue.number);
   }
 
   return {
     tasks,
     createdLinks,
+    touchedIssueNumbers,
   };
 }
 

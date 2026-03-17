@@ -75,32 +75,40 @@ export async function pullComments(input: {
   };
   itemLinkStore: ForgejoItemLinkStore;
   commentLinkStore: ForgejoCommentLinkStore;
+  issueNumbers?: readonly number[];
+  since?: string;
 }): Promise<PullCommentsResult> {
   const comments: ExternalComment[] = [];
   const createdLinks: ForgejoCommentLink[] = [];
   const deletedLinks: ForgejoCommentLink[] = [];
 
-  const itemLinks = input.itemLinkStore.list(input.binding.id);
+  const issueNumbers = input.issueNumbers ? new Set(input.issueNumbers) : null;
+  const itemLinks = input.itemLinkStore
+    .list(input.binding.id)
+    .filter((itemLink) => issueNumbers?.has(itemLink.issueNumber) ?? true);
 
   for (const itemLink of itemLinks) {
     const forgejoComments = await input.issueClient.listComments(
       input.target,
-      itemLink.issueNumber
+      itemLink.issueNumber,
+      input.since ? { since: input.since } : undefined
     );
     const existingCommentLinks = input.commentLinkStore.listByIssue(
       input.binding.id,
       itemLink.issueNumber
     );
 
-    const forgejoCommentIds = new Set(forgejoComments.map((comment) => comment.id));
+    if (!input.since) {
+      const forgejoCommentIds = new Set(forgejoComments.map((comment) => comment.id));
 
-    for (const commentLink of existingCommentLinks) {
-      if (!forgejoCommentIds.has(commentLink.forgejoCommentId)) {
-        input.commentLinkStore.removeByForgejoCommentId(
-          input.binding.id,
-          commentLink.forgejoCommentId
-        );
-        deletedLinks.push(commentLink);
+      for (const commentLink of existingCommentLinks) {
+        if (!forgejoCommentIds.has(commentLink.forgejoCommentId)) {
+          input.commentLinkStore.removeByForgejoCommentId(
+            input.binding.id,
+            commentLink.forgejoCommentId
+          );
+          deletedLinks.push(commentLink);
+        }
       }
     }
 

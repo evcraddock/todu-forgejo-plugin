@@ -246,7 +246,7 @@ export function createForgejoSyncProvider(
       const logContext = createLogContext(binding, parsedBinding, "pull");
 
       if (binding.strategy === "none" || binding.strategy === "push") {
-        lastPullResult = { tasks: [], createdLinks: [] };
+        lastPullResult = { tasks: [], createdLinks: [], touchedIssueNumbers: [] };
         logger.debug("skipping pull due to binding strategy", logContext);
         return { tasks: [] };
       }
@@ -284,6 +284,7 @@ export function createForgejoSyncProvider(
           target,
           itemLinkStore: linkStore,
           commentLinkStore,
+          issueNumbers: lastPullResult.touchedIssueNumbers,
         });
 
         const cursor = new Date().toISOString();

@@ -49,6 +49,10 @@ export interface ListForgejoIssuesOptions {
   since?: string;
 }
 
+export interface ListForgejoCommentsOptions {
+  since?: string;
+}
+
 export interface ForgejoIssueClient {
   listIssues(
     target: ForgejoRepositoryTarget,
@@ -66,7 +70,11 @@ export interface ForgejoIssueClient {
   ): Promise<ForgejoIssue>;
   listLabels(target: ForgejoRepositoryTarget): Promise<string[]>;
   createLabel(target: ForgejoRepositoryTarget, name: string): Promise<void>;
-  listComments(target: ForgejoRepositoryTarget, issueNumber: number): Promise<ForgejoComment[]>;
+  listComments(
+    target: ForgejoRepositoryTarget,
+    issueNumber: number,
+    options?: ListForgejoCommentsOptions
+  ): Promise<ForgejoComment[]>;
   createComment(
     target: ForgejoRepositoryTarget,
     issueNumber: number,
@@ -324,8 +332,17 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
     async createLabel(target, name): Promise<void> {
       getLabels(target).add(name);
     },
-    async listComments(target, issueNumber): Promise<ForgejoComment[]> {
-      return getComments(target, issueNumber).map(cloneComment);
+    async listComments(target, issueNumber, options): Promise<ForgejoComment[]> {
+      return getComments(target, issueNumber)
+        .filter((comment) => {
+          if (!options?.since) {
+            return true;
+          }
+
+          const commentTime = comment.updatedAt ?? comment.createdAt;
+          return commentTime >= options.since;
+        })
+        .map(cloneComment);
     },
     async createComment(target, issueNumber, body): Promise<ForgejoComment> {
       const comments = getComments(target, issueNumber);
