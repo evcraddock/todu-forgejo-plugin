@@ -27,6 +27,7 @@ export {
   type ForgejoIssueClient,
   type ForgejoRepositoryTarget as ForgejoClientRepositoryTarget,
   type InMemoryForgejoIssueClient,
+  type ListForgejoCommentsOptions,
   type ListForgejoIssuesOptions,
   type UpdateForgejoIssueInput,
 } from "@/forgejo-client";

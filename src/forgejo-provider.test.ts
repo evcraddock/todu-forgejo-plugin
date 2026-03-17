@@ -305,16 +305,18 @@ describe("forgejo provider runtime integration", () => {
       },
     ]);
 
-    const listCommentsCalls: number[] = [];
+    const listCommentsCalls: Array<{ issueNumber: number; since?: string }> = [];
     const originalListComments = issueClient.listComments.bind(issueClient);
     issueClient.listComments = async (bindingTarget, issueNumber, options) => {
-      listCommentsCalls.push(issueNumber);
+      listCommentsCalls.push({ issueNumber, since: options?.since });
       return originalListComments(bindingTarget, issueNumber, options);
     };
 
     await provider.pull(createBinding(), project);
 
-    expect(listCommentsCalls).toEqual([7]);
+    expect(listCommentsCalls).toHaveLength(1);
+    expect(listCommentsCalls[0].issueNumber).toBe(7);
+    expect(listCommentsCalls[0].since).toEqual(expect.any(String));
   });
 
   it("records failure in runtime store when pull throws", async () => {
