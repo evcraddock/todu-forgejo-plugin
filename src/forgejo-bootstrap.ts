@@ -39,6 +39,7 @@ export interface ForgejoBootstrapTaskUpdate {
 export interface ForgejoBootstrapExportResult {
   createdIssues: ForgejoIssue[];
   updatedIssues: ForgejoIssue[];
+  closedIssues: ForgejoIssue[];
   createdLinks: ForgejoItemLink[];
   taskUpdates: ForgejoBootstrapTaskUpdate[];
   hydratedLinkedTasks: number;
@@ -126,6 +127,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
 }): Promise<ForgejoBootstrapExportResult> {
   const createdIssues: ForgejoIssue[] = [];
   const updatedIssues: ForgejoIssue[] = [];
+  const closedIssues: ForgejoIssue[] = [];
   const createdLinks: ForgejoItemLink[] = [];
   const taskUpdates: ForgejoBootstrapTaskUpdate[] = [];
   let hydratedLinkedTasks = 0;
@@ -273,14 +275,64 @@ export async function bootstrapTasksToForgejoIssues(input: {
     });
   }
 
+  const currentTaskIds = new Set(input.tasks.map((task) => task.id));
+  const orphanedLinks = input.linkStore
+    .list(input.binding.id)
+    .filter((link) => !currentTaskIds.has(link.taskId));
+
+  for (const orphanedLink of orphanedLinks) {
+    issueReadCount += 1;
+    const existingIssue = await input.issueClient.getIssue(target, orphanedLink.issueNumber);
+
+    if (!existingIssue) {
+      input.linkStore.remove(input.binding.id, orphanedLink.taskId);
+      continue;
+    }
+
+    if (input.shouldSkipIssueUpdate?.(existingIssue)) {
+      continue;
+    }
+
+    if (existingIssue.state === "closed") {
+      input.linkStore.remove(input.binding.id, orphanedLink.taskId);
+      continue;
+    }
+
+    const issueClose = createForgejoIssueCloseFromDeletion(existingIssue);
+    await ensureLabelsExist(issueClose.labels ?? []);
+    const closedIssue = await input.issueClient.updateIssue(
+      target,
+      orphanedLink.issueNumber,
+      issueClose
+    );
+    closedIssues.push(closedIssue);
+    input.linkStore.remove(input.binding.id, orphanedLink.taskId);
+  }
+
   return {
     createdIssues,
     updatedIssues,
+    closedIssues,
     createdLinks,
     taskUpdates,
     hydratedLinkedTasks,
     issueReadCount,
     skippedLinkedTasks,
+  };
+}
+
+function createForgejoIssueCloseFromDeletion(issue: ForgejoIssue): {
+  state: "closed";
+  labels: string[];
+} {
+  return {
+    state: "closed",
+    labels: [
+      ...new Set([
+        ...issue.labels.filter((label) => !label.startsWith("status:")),
+        "status:canceled",
+      ]),
+    ],
   };
 }
 

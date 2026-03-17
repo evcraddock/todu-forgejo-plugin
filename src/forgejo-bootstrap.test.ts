@@ -357,4 +357,140 @@ describe("forgejo bootstrap", () => {
 
     expect(listLabelsCalls).toBe(1);
   });
+
+  it("closes orphaned linked issues and removes their links", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    const orphanedTaskId = createTaskId("task-orphaned");
+
+    issueClient.seedIssues(target, [
+      {
+        number: 11,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#11",
+        title: "Orphaned issue",
+        state: "open",
+        labels: ["bug", "status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+    linkStore.save({
+      bindingId: binding.id,
+      taskId: orphanedTaskId,
+      issueNumber: 11,
+      externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#11",
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+    });
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      baseUrl: target.baseUrl,
+      apiBaseUrl: target.apiBaseUrl,
+      owner: target.owner,
+      repo: target.repo,
+      tasks: [],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.closedIssues).toHaveLength(1);
+    expect(result.closedIssues[0]).toMatchObject({
+      number: 11,
+      state: "closed",
+      labels: ["bug", "priority:medium", "status:canceled"],
+    });
+    expect(result.issueReadCount).toBe(1);
+    expect(linkStore.getByTaskId(binding.id, orphanedTaskId)).toBeNull();
+  });
+
+  it("skips redundant close calls for already-closed orphaned issues and removes their links", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    const orphanedTaskId = createTaskId("task-orphaned");
+
+    issueClient.seedIssues(target, [
+      {
+        number: 12,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#12",
+        title: "Closed orphaned issue",
+        state: "closed",
+        labels: ["status:done", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+    linkStore.save({
+      bindingId: binding.id,
+      taskId: orphanedTaskId,
+      issueNumber: 12,
+      externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#12",
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+    });
+
+    let updateIssueCalls = 0;
+    const originalUpdateIssue = issueClient.updateIssue.bind(issueClient);
+    issueClient.updateIssue = async (...args) => {
+      updateIssueCalls += 1;
+      return originalUpdateIssue(...args);
+    };
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      baseUrl: target.baseUrl,
+      apiBaseUrl: target.apiBaseUrl,
+      owner: target.owner,
+      repo: target.repo,
+      tasks: [],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.closedIssues).toEqual([]);
+    expect(result.issueReadCount).toBe(1);
+    expect(updateIssueCalls).toBe(0);
+    expect(linkStore.getByTaskId(binding.id, orphanedTaskId)).toBeNull();
+  });
+
+  it("keeps orphaned links when loop prevention skips deletion-driven closes", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    const orphanedTaskId = createTaskId("task-orphaned");
+
+    issueClient.seedIssues(target, [
+      {
+        number: 13,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#13",
+        title: "Loop-protected orphaned issue",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+    linkStore.save({
+      bindingId: binding.id,
+      taskId: orphanedTaskId,
+      issueNumber: 13,
+      externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#13",
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+    });
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      baseUrl: target.baseUrl,
+      apiBaseUrl: target.apiBaseUrl,
+      owner: target.owner,
+      repo: target.repo,
+      tasks: [],
+      issueClient,
+      linkStore,
+      shouldSkipIssueUpdate: () => true,
+    });
+
+    expect(result.closedIssues).toEqual([]);
+    expect(linkStore.getByTaskId(binding.id, orphanedTaskId)).not.toBeNull();
+  });
 });
