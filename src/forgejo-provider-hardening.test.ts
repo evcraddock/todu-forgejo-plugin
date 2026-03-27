@@ -1,14 +1,17 @@
 import {
   createIntegrationBindingId,
+  createNoteId,
   createProjectId,
   createTaskId,
   type IntegrationBinding,
   type TaskPushPayload,
 } from "@todu/core";
 
+import { createInMemoryForgejoCommentLinkStore } from "@/forgejo-comment-links";
 import { FORGEJO_PROVIDER_NAME, FORGEJO_REPOSITORY_TARGET_KIND } from "@/forgejo-binding";
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
-import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
+import { createForgejoSyncLogger } from "@/forgejo-logger";
+import { createLinkFromTask, createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
 import { createForgejoSyncProvider } from "@/forgejo-provider";
 import { createInMemoryForgejoBindingRuntimeStore } from "@/forgejo-runtime";
 
@@ -203,6 +206,87 @@ describe("strategy-specific behavior", () => {
 });
 
 describe("provider error classification coverage", () => {
+  it("skips missing issue comment fetches, removes stale links, and logs a warning", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+    issueClient.listComments = async (_target, issueNumber) => {
+      throw new Error(
+        `Forgejo API GET /repos/acme/roadmap/issues/${issueNumber}/comments failed: 404 issue does not exist`
+      );
+    };
+
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    const logger = createForgejoSyncLogger();
+    const provider = await initProvider({
+      issueClient,
+      linkStore,
+      commentLinkStore: createInMemoryForgejoCommentLinkStore(),
+      logger,
+    });
+
+    const result = await provider.pull(createBinding(), project);
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.comments).toEqual([]);
+    expect(linkStore.getByIssueNumber(createBinding().id, 7)).toBeNull();
+    expect(logger.getEntries()).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "skipping comments for missing remote issue; stale links removed",
+        context: expect.objectContaining({
+          bindingId: createBinding().id,
+          direction: "pull",
+          entityType: "issue",
+          itemId: "7",
+        }),
+      })
+    );
+  });
+
+  it("keeps transient comment pull timeouts retryable", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+    issueClient.listComments = async () => {
+      throw new Error("The operation timed out.");
+    };
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = await initProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+      retryConfig: { initialSeconds: 0, maxSeconds: 0 },
+    });
+
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow("timed out");
+
+    const state = runtimeStore.get(createBinding().id);
+    expect(state!.lastError).toContain("transport error");
+    expect(state!.retryAttempt).toBe(1);
+  });
+
   it("classifies 404 as non-retryable not-found", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.listIssues = async () => {
@@ -240,6 +324,71 @@ describe("provider error classification coverage", () => {
 });
 
 describe("provider push failure handling", () => {
+  it("recreates a missing remote issue for a stale local reference and remirrors comments", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+
+    linkStore.save(
+      createLinkFromTask({
+        binding: createBinding(),
+        taskId: createTaskId("task-1"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+        lastMirroredAt: "2026-03-12T00:00:00.000Z",
+      })
+    );
+    commentLinkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-1"),
+      noteId: createNoteId("note-1"),
+      issueNumber: 7,
+      forgejoCommentId: 11,
+      lastMirroredAt: "2026-03-12T00:00:00.000Z",
+      lastMirroredBody: "Old mirrored body",
+    });
+
+    const provider = await initProvider({
+      issueClient,
+      linkStore,
+      commentLinkStore,
+    });
+
+    const pushResult = await provider.push(
+      createBinding(),
+      [
+        createPushTask({
+          externalId: "https://code.example.com/acme/roadmap#7",
+          updatedAt: "2026-03-12T02:00:00.000Z",
+          comments: [
+            {
+              id: createNoteId("note-1"),
+              content: "Updated local note",
+              author: "alice",
+              createdAt: "2026-03-12T02:00:00.000Z",
+              tags: [],
+            },
+          ],
+        }),
+      ],
+      project
+    );
+
+    expect(issueClient.snapshotIssues(target)).toHaveLength(1);
+    expect(issueClient.snapshotComments(target, 1)).toHaveLength(1);
+    expect(issueClient.snapshotComments(target, 1)[0].body).toContain("Updated local note");
+    expect(pushResult.taskLinks).toHaveLength(1);
+    expect(pushResult.taskLinks[0].externalId).toBe("https://code.example.com/acme/roadmap#1");
+    expect(commentLinkStore.getByNoteId(createBinding().id, createNoteId("note-1"))).toMatchObject({
+      issueNumber: 1,
+      forgejoCommentId: 1,
+    });
+    expect(linkStore.getByIssueNumber(createBinding().id, 7)).toBeNull();
+    expect(linkStore.getByIssueNumber(createBinding().id, 1)).not.toBeNull();
+  });
+
   it("records failure state when push throws", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.createIssue = async () => {

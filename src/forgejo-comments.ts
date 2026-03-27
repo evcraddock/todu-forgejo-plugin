@@ -64,6 +64,11 @@ export interface PullCommentsResult {
   createdLinks: ForgejoCommentLink[];
 }
 
+export interface PullCommentsIssueErrorContext {
+  itemLink: ForgejoItemLink;
+  error: unknown;
+}
+
 export async function pullComments(input: {
   binding: IntegrationBinding;
   issueClient: ForgejoIssueClient;
@@ -77,6 +82,9 @@ export async function pullComments(input: {
   commentLinkStore: ForgejoCommentLinkStore;
   issueNumbers?: readonly number[];
   since?: string;
+  onIssueError?: (
+    context: PullCommentsIssueErrorContext
+  ) => "continue" | "throw" | Promise<"continue" | "throw">;
 }): Promise<PullCommentsResult> {
   const comments: ExternalComment[] = [];
   const createdLinks: ForgejoCommentLink[] = [];
@@ -87,11 +95,22 @@ export async function pullComments(input: {
     .filter((itemLink) => issueNumbers?.has(itemLink.issueNumber) ?? true);
 
   for (const itemLink of itemLinks) {
-    const forgejoComments = await input.issueClient.listComments(
-      input.target,
-      itemLink.issueNumber,
-      input.since ? { since: input.since } : undefined
-    );
+    let forgejoComments: ForgejoComment[];
+
+    try {
+      forgejoComments = await input.issueClient.listComments(
+        input.target,
+        itemLink.issueNumber,
+        input.since ? { since: input.since } : undefined
+      );
+    } catch (error) {
+      const resolution = await input.onIssueError?.({ itemLink, error });
+      if (resolution === "continue") {
+        continue;
+      }
+
+      throw error;
+    }
 
     for (const forgejoComment of forgejoComments) {
       const strippedBody = stripAttribution(forgejoComment.body);

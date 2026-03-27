@@ -11,6 +11,7 @@ import {
   mapForgejoIssueToExternalTask,
 } from "@/forgejo-fields";
 import { parseForgejoIssueExternalId } from "@/forgejo-ids";
+import type { ForgejoCommentLinkStore } from "@/forgejo-comment-links";
 import {
   createLinkFromIssue,
   createLinkFromTask,
@@ -123,6 +124,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
   tasks: TaskPushPayload[];
   issueClient: ForgejoIssueClient;
   linkStore: ForgejoItemLinkStore;
+  commentLinkStore?: ForgejoCommentLinkStore;
   shouldSkipIssueUpdate?: (issue: ForgejoIssue) => boolean;
 }): Promise<ForgejoBootstrapExportResult> {
   const createdIssues: ForgejoIssue[] = [];
@@ -152,101 +154,21 @@ export async function bootstrapTasksToForgejoIssues(input: {
     }
   };
 
-  for (const task of input.tasks) {
-    const existingLink = input.linkStore.getByTaskId(input.binding.id, task.id);
-    if (existingLink) {
-      task.externalId = existingLink.externalId;
-      task.sourceUrl ??= createForgejoIssueSourceUrl(target, existingLink.issueNumber);
+  const clearStaleTaskReferences = (taskId: TaskPushPayload["id"]): void => {
+    input.linkStore.remove(input.binding.id, taskId);
 
-      if (!existingLink.lastMirroredAt) {
-        issueReadCount += 1;
-        const existingIssue = await input.issueClient.getIssue(target, existingLink.issueNumber);
-        hydratedLinkedTasks += 1;
-        task.sourceUrl = existingIssue?.sourceUrl ?? task.sourceUrl;
-
-        if (existingIssue) {
-          const hydratedLink: ForgejoItemLink = {
-            ...existingLink,
-            lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
-          };
-          input.linkStore.save(hydratedLink);
-
-          if (!shouldPushTaskUpdate(task, existingIssue)) {
-            skippedLinkedTasks += 1;
-            continue;
-          }
-
-          if (input.shouldSkipIssueUpdate?.(existingIssue)) {
-            continue;
-          }
-        }
-      } else if (!shouldPushTaskUpdateFromMirroredAt(task, existingLink.lastMirroredAt)) {
-        skippedLinkedTasks += 1;
-        continue;
-      }
-
-      const issueUpdate = createForgejoIssueUpdateFromTask(task);
-      await ensureLabelsExist(issueUpdate.labels ?? []);
-      const updatedIssue = await input.issueClient.updateIssue(
-        target,
-        existingLink.issueNumber,
-        issueUpdate
-      );
-      task.sourceUrl = updatedIssue.sourceUrl;
-      input.linkStore.save({
-        ...existingLink,
-        lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
-      });
-      updatedIssues.push(updatedIssue);
-      continue;
+    if (!input.commentLinkStore) {
+      return;
     }
 
-    const matchingExternalId = getMatchingExternalId(task, input.baseUrl, input.owner, input.repo);
-    if (matchingExternalId) {
-      issueReadCount += 1;
-      const existingIssue = await input.issueClient.getIssue(
-        target,
-        matchingExternalId.issueNumber
-      );
-      const createdLink = createLinkFromTask({
-        binding: input.binding,
-        taskId: task.id,
-        baseUrl: input.baseUrl,
-        owner: input.owner,
-        repo: input.repo,
-        issueNumber: matchingExternalId.issueNumber,
-        lastMirroredAt: existingIssue?.updatedAt ?? existingIssue?.createdAt,
-      });
-      task.externalId = createdLink.externalId;
-      task.sourceUrl ??=
-        existingIssue?.sourceUrl ??
-        createForgejoIssueSourceUrl(target, matchingExternalId.issueNumber);
-      input.linkStore.save(createdLink);
-      createdLinks.push(createdLink);
-
-      if (
-        shouldPushTaskUpdate(task, existingIssue) &&
-        !(existingIssue && input.shouldSkipIssueUpdate?.(existingIssue))
-      ) {
-        const issueUpdate = createForgejoIssueUpdateFromTask(task);
-        await ensureLabelsExist(issueUpdate.labels ?? []);
-        const updatedIssue = await input.issueClient.updateIssue(
-          target,
-          matchingExternalId.issueNumber,
-          issueUpdate
-        );
-        task.sourceUrl = updatedIssue.sourceUrl;
-        input.linkStore.save({
-          ...createdLink,
-          lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
-        });
-        updatedIssues.push(updatedIssue);
-      }
-      continue;
+    for (const commentLink of input.commentLinkStore.listByTask(input.binding.id, taskId)) {
+      input.commentLinkStore.remove(input.binding.id, commentLink.noteId);
     }
+  };
 
+  const createIssueForTask = async (task: TaskPushPayload): Promise<boolean> => {
     if (!TASK_BOOTSTRAP_EXPORT_STATUSES.has(task.status)) {
-      continue;
+      return false;
     }
 
     const issueCreate = createForgejoIssueCreateFromTask(task);
@@ -273,6 +195,123 @@ export async function bootstrapTasksToForgejoIssues(input: {
       externalId: createdLink.externalId,
       sourceUrl: createdIssue.sourceUrl,
     });
+
+    return true;
+  };
+
+  for (const task of input.tasks) {
+    const existingLink = input.linkStore.getByTaskId(input.binding.id, task.id);
+    if (existingLink) {
+      task.externalId = existingLink.externalId;
+      task.sourceUrl ??= createForgejoIssueSourceUrl(target, existingLink.issueNumber);
+
+      if (!existingLink.lastMirroredAt) {
+        issueReadCount += 1;
+        const existingIssue = await input.issueClient.getIssue(target, existingLink.issueNumber);
+        hydratedLinkedTasks += 1;
+        task.sourceUrl = existingIssue?.sourceUrl ?? task.sourceUrl;
+
+        if (!existingIssue) {
+          clearStaleTaskReferences(task.id);
+          await createIssueForTask(task);
+          continue;
+        }
+
+        const hydratedLink: ForgejoItemLink = {
+          ...existingLink,
+          lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
+        };
+        input.linkStore.save(hydratedLink);
+
+        if (!shouldPushTaskUpdate(task, existingIssue)) {
+          skippedLinkedTasks += 1;
+          continue;
+        }
+
+        if (input.shouldSkipIssueUpdate?.(existingIssue)) {
+          continue;
+        }
+      } else if (!shouldPushTaskUpdateFromMirroredAt(task, existingLink.lastMirroredAt)) {
+        skippedLinkedTasks += 1;
+        continue;
+      }
+
+      const issueUpdate = createForgejoIssueUpdateFromTask(task);
+      await ensureLabelsExist(issueUpdate.labels ?? []);
+
+      try {
+        const updatedIssue = await input.issueClient.updateIssue(
+          target,
+          existingLink.issueNumber,
+          issueUpdate
+        );
+        task.sourceUrl = updatedIssue.sourceUrl;
+        input.linkStore.save({
+          ...existingLink,
+          lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
+        });
+        updatedIssues.push(updatedIssue);
+      } catch (error) {
+        if (!isForgejoIssueNotFoundError(error)) {
+          throw error;
+        }
+
+        clearStaleTaskReferences(task.id);
+        await createIssueForTask(task);
+      }
+      continue;
+    }
+
+    const matchingExternalId = getMatchingExternalId(task, input.baseUrl, input.owner, input.repo);
+    if (matchingExternalId) {
+      issueReadCount += 1;
+      const existingIssue = await input.issueClient.getIssue(
+        target,
+        matchingExternalId.issueNumber
+      );
+
+      if (!existingIssue) {
+        clearStaleTaskReferences(task.id);
+        await createIssueForTask(task);
+        continue;
+      }
+
+      const createdLink = createLinkFromTask({
+        binding: input.binding,
+        taskId: task.id,
+        baseUrl: input.baseUrl,
+        owner: input.owner,
+        repo: input.repo,
+        issueNumber: matchingExternalId.issueNumber,
+        lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
+      });
+      task.externalId = createdLink.externalId;
+      task.sourceUrl ??= existingIssue.sourceUrl;
+      input.linkStore.save(createdLink);
+      createdLinks.push(createdLink);
+
+      if (
+        shouldPushTaskUpdate(task, existingIssue) &&
+        !input.shouldSkipIssueUpdate?.(existingIssue)
+      ) {
+        const issueUpdate = createForgejoIssueUpdateFromTask(task);
+        await ensureLabelsExist(issueUpdate.labels ?? []);
+        const updatedIssue = await input.issueClient.updateIssue(
+          target,
+          matchingExternalId.issueNumber,
+          issueUpdate
+        );
+        task.sourceUrl = updatedIssue.sourceUrl;
+        input.linkStore.save({
+          ...createdLink,
+          lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
+        });
+        updatedIssues.push(updatedIssue);
+      }
+      continue;
+    }
+
+    await createIssueForTask(task);
   }
 
   const currentTaskIds = new Set(input.tasks.map((task) => task.id));
@@ -319,6 +358,11 @@ export async function bootstrapTasksToForgejoIssues(input: {
     issueReadCount,
     skippedLinkedTasks,
   };
+}
+
+function isForgejoIssueNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b404\b/.test(message) || /issue not found/i.test(message);
 }
 
 function createForgejoIssueCloseFromDeletion(issue: ForgejoIssue): {
