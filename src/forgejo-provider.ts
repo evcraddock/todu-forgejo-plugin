@@ -183,6 +183,24 @@ export function createForgejoSyncProvider(
     return settings;
   };
 
+  const clearCommentLinksForIssue = (
+    bindingId: IntegrationBinding["id"],
+    issueNumber: number
+  ): void => {
+    for (const commentLink of commentLinkStore.listByIssue(bindingId, issueNumber)) {
+      commentLinkStore.remove(bindingId, commentLink.noteId);
+    }
+  };
+
+  const clearStaleIssueReferences = (input: {
+    bindingId: IntegrationBinding["id"];
+    issueNumber: number;
+    taskId: Task["id"];
+  }): void => {
+    clearCommentLinksForIssue(input.bindingId, input.issueNumber);
+    linkStore.remove(input.bindingId, input.taskId);
+  };
+
   const validateBinding = (
     binding: Parameters<SyncProvider["pull"]>[0]
   ): ForgejoRepositoryBinding => {
@@ -286,6 +304,24 @@ export function createForgejoSyncProvider(
           commentLinkStore,
           issueNumbers: lastPullResult.touchedIssueNumbers,
           since: runtimeState.lastSuccessAt ?? undefined,
+          onIssueError: ({ itemLink, error }) => {
+            const classification = classifyForgejoSyncError(error);
+            if (classification.kind !== "not-found") {
+              return "throw";
+            }
+
+            clearStaleIssueReferences({
+              bindingId: binding.id,
+              issueNumber: itemLink.issueNumber,
+              taskId: itemLink.taskId,
+            });
+            logger.warn("skipping comments for missing remote issue; stale links removed", {
+              ...logContext,
+              entityType: "issue",
+              itemId: String(itemLink.issueNumber),
+            });
+            return "continue";
+          },
         });
 
         const cursor = new Date().toISOString();
@@ -358,6 +394,7 @@ export function createForgejoSyncProvider(
           tasks,
           issueClient,
           linkStore,
+          commentLinkStore,
           shouldSkipIssueUpdate: (issue) => {
             const issueTimestamp = issue.updatedAt ?? issue.createdAt;
             if (!issueTimestamp) {
