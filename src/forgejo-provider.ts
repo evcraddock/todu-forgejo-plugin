@@ -438,6 +438,13 @@ export function createForgejoSyncProvider(
           tasks: tasks as ExportedTaskInput[],
           itemLinkStore: linkStore,
           commentLinkStore,
+          onStaleLink: ({ itemLink, commentLink }) => {
+            logger.warn("removing stale comment link for missing local note", {
+              ...logContext,
+              entityType: "comment",
+              itemId: `${itemLink.issueNumber}:${commentLink.forgejoCommentId}`,
+            });
+          },
         });
 
         for (const createdComment of pushCommentsResult.createdComments) {
