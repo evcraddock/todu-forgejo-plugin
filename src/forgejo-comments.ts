@@ -190,6 +190,11 @@ export interface PushCommentsResult {
   updatedComments: ForgejoComment[];
 }
 
+export interface PushCommentsStaleLinkContext {
+  itemLink: ForgejoItemLink;
+  commentLink: ForgejoCommentLink;
+}
+
 export async function pushComments(input: {
   binding: IntegrationBinding;
   issueClient: ForgejoIssueClient;
@@ -202,6 +207,7 @@ export async function pushComments(input: {
   tasks: ForgejoPushTask[];
   itemLinkStore: ForgejoItemLinkStore;
   commentLinkStore: ForgejoCommentLinkStore;
+  onStaleLink?: (context: PushCommentsStaleLinkContext) => void | Promise<void>;
 }): Promise<PushCommentsResult> {
   const commentLinks: SyncProviderPushCommentLink[] = [];
   const createdComments: ForgejoComment[] = [];
@@ -212,6 +218,25 @@ export async function pushComments(input: {
     const itemLink = input.itemLinkStore.getByTaskId(input.binding.id, localTaskId as never);
     if (!itemLink) {
       continue;
+    }
+
+    const currentNoteIds = new Set(
+      (task.comments as ForgejoPushComment[]).map((comment) => String(toPushNote(comment).id))
+    );
+
+    for (const existingCommentLink of input.commentLinkStore.listByTask(
+      input.binding.id,
+      itemLink.taskId
+    )) {
+      if (currentNoteIds.has(String(existingCommentLink.noteId))) {
+        continue;
+      }
+
+      input.commentLinkStore.remove(input.binding.id, existingCommentLink.noteId);
+      await input.onStaleLink?.({
+        itemLink,
+        commentLink: existingCommentLink,
+      });
     }
 
     for (const comment of task.comments as ForgejoPushComment[]) {

@@ -253,7 +253,7 @@ describe("forgejo comments", () => {
     expect(commentLinkStore.getByForgejoCommentId(binding.id, 21)).toBeNull();
   });
 
-  it("pushes local notes to forgejo, updates linked comments, and leaves removed comments alone", async () => {
+  it("pushes local notes to forgejo, updates linked comments, and prunes stale links for removed local notes", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const itemLinkStore = createInMemoryForgejoItemLinkStore();
     const commentLinkStore = createInMemoryForgejoCommentLinkStore();
@@ -372,7 +372,7 @@ describe("forgejo comments", () => {
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-existing"))).toMatchObject({
       lastMirroredBody: "Updated local body",
     });
-    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-delete"))).not.toBeNull();
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-delete"))).toBeNull();
     expect(issueClient.snapshotComments(target, 7).map((comment) => comment.id)).toEqual([
       21, 22, 23,
     ]);
@@ -460,6 +460,87 @@ describe("forgejo comments", () => {
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("external:21"))).toMatchObject({
       lastMirroredBody: "Edited imported body",
     });
+  });
+
+  it("removes stale comment links for missing local notes before pushing", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const itemLinkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+        title: "Issue",
+        state: "open",
+        labels: [],
+        assigneeActorIds: [],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-1"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+      })
+    );
+    commentLinkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-1"),
+      noteId: createNoteId("note-stale"),
+      issueNumber: 7,
+      forgejoCommentId: 21,
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Old local body",
+    });
+    commentLinkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-1"),
+      noteId: createNoteId("note-existing"),
+      issueNumber: 7,
+      forgejoCommentId: 22,
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Existing body",
+    });
+
+    const staleLinks: ForgejoCommentLink[] = [];
+    const result = await pushComments({
+      binding,
+      issueClient,
+      target,
+      tasks: [
+        createTask([
+          {
+            id: createNoteId("note-existing"),
+            content: "Existing body",
+            author: "bob",
+            tags: [],
+            createdAt: "2026-03-12T01:00:00.000Z",
+          },
+        ]),
+      ],
+      itemLinkStore,
+      commentLinkStore,
+      onStaleLink: ({ commentLink }) => {
+        staleLinks.push(commentLink);
+      },
+    });
+
+    expect(result.createdComments).toHaveLength(0);
+    expect(result.updatedComments).toHaveLength(0);
+    expect(result.commentLinks).toHaveLength(1);
+    expect(staleLinks).toEqual([
+      expect.objectContaining({ noteId: createNoteId("note-stale"), forgejoCommentId: 21 }),
+    ]);
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-stale"))).toBeNull();
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-existing"))).not.toBeNull();
   });
 
   it("skips unchanged linked notes and ignores unlinked imported notes", async () => {

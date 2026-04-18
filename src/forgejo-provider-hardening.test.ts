@@ -258,6 +258,77 @@ describe("provider error classification coverage", () => {
     );
   });
 
+  it("removes stale push comment links for missing local notes and logs a warning", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    linkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-1"),
+      issueNumber: 7,
+      externalId: "https://code.example.com/acme/roadmap#7",
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+    });
+
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+    commentLinkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-1"),
+      noteId: createNoteId("note-stale"),
+      issueNumber: 7,
+      forgejoCommentId: 21,
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Old local body",
+    });
+
+    const logger = createForgejoSyncLogger();
+    const provider = await initProvider({
+      issueClient,
+      linkStore,
+      commentLinkStore,
+      logger,
+    });
+
+    const pushResult = await provider.push(
+      createBinding(),
+      [
+        createPushTask({
+          id: createTaskId("task-1"),
+          externalId: "https://code.example.com/acme/roadmap#7",
+          comments: [],
+        }),
+      ],
+      project
+    );
+
+    expect(pushResult.commentLinks).toEqual([]);
+    expect(commentLinkStore.getByNoteId(createBinding().id, createNoteId("note-stale"))).toBeNull();
+    expect(logger.getEntries()).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "removing stale comment link for missing local note",
+        context: expect.objectContaining({
+          bindingId: createBinding().id,
+          direction: "push",
+          entityType: "comment",
+          itemId: "7:21",
+        }),
+      })
+    );
+  });
+
   it("keeps transient comment pull timeouts retryable", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
