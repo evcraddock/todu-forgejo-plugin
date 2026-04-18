@@ -2,15 +2,13 @@ import path from "node:path";
 
 import {
   SYNC_PROVIDER_API_VERSION,
-  type ExternalTask,
+  type ExportedTaskInput,
   type IntegrationBinding,
-  type Project,
-  type SyncProvider,
   type SyncProviderConfig,
-  type SyncProviderPullResult,
+  type SyncProviderPullResultV3,
   type SyncProviderPushResult,
   type SyncProviderRegistration,
-  type Task,
+  type SyncProviderV3,
   type TaskPushPayload,
 } from "@todu/core";
 
@@ -76,13 +74,8 @@ import {
   type ForgejoBindingRuntimeStore,
   type ForgejoRetryConfig,
 } from "@/forgejo-runtime";
-import { createImportedTaskId } from "@/forgejo-ids";
 
 export const FORGEJO_PROVIDER_VERSION = "0.1.0";
-
-const DEFAULT_TIMESTAMP = new Date(0).toISOString();
-const DEFAULT_PRIORITY: Task["priority"] = "medium";
-const OPEN_STATUSES = new Set<Task["status"]>(["active", "inprogress", "waiting"]);
 const DEFAULT_LOOP_PREVENTION_MAX_AGE_MS = 10 * 60 * 1000;
 
 export interface ForgejoProviderState {
@@ -98,7 +91,12 @@ export interface ForgejoProviderState {
   bindingStatuses: Map<IntegrationBinding["id"], ForgejoBindingStatus>;
 }
 
-export interface ForgejoSyncProvider extends SyncProvider {
+export interface ForgejoSyncProvider extends SyncProviderV3 {
+  push(
+    binding: IntegrationBinding,
+    tasks: ExportedTaskInput[] | TaskPushPayload[],
+    project: Parameters<SyncProviderV3["push"]>[2]
+  ): Promise<SyncProviderPushResult>;
   getState(): ForgejoProviderState;
 }
 
@@ -195,14 +193,14 @@ export function createForgejoSyncProvider(
   const clearStaleIssueReferences = (input: {
     bindingId: IntegrationBinding["id"];
     issueNumber: number;
-    taskId: Task["id"];
+    taskId: ForgejoItemLink["taskId"];
   }): void => {
     clearCommentLinksForIssue(input.bindingId, input.issueNumber);
     linkStore.remove(input.bindingId, input.taskId);
   };
 
   const validateBinding = (
-    binding: Parameters<SyncProvider["pull"]>[0]
+    binding: Parameters<SyncProviderV3["pull"]>[0]
   ): ForgejoRepositoryBinding => {
     requireInitializedSettings();
     return parseForgejoBinding(binding);
@@ -257,7 +255,7 @@ export function createForgejoSyncProvider(
         loopPreventionStore = createForgejoLoopPreventionStore();
       }
     },
-    async pull(binding, _project): Promise<SyncProviderPullResult> {
+    async pull(binding, _project): Promise<SyncProviderPullResultV3> {
       const parsedBinding = validateBinding(binding);
       const currentSettings = requireInitializedSettings();
       const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
@@ -349,7 +347,11 @@ export function createForgejoSyncProvider(
         throw error;
       }
     },
-    async push(binding, tasks, _project): Promise<SyncProviderPushResult> {
+    async push(
+      binding,
+      tasks: ExportedTaskInput[] | TaskPushPayload[],
+      _project
+    ): Promise<SyncProviderPushResult> {
       const parsedBinding = validateBinding(binding);
       const currentSettings = requireInitializedSettings();
       const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
@@ -391,7 +393,7 @@ export function createForgejoSyncProvider(
           apiBaseUrl: target.apiBaseUrl,
           owner: target.owner,
           repo: target.repo,
-          tasks,
+          tasks: tasks as ExportedTaskInput[],
           issueClient,
           linkStore,
           commentLinkStore,
@@ -433,7 +435,7 @@ export function createForgejoSyncProvider(
           binding,
           issueClient,
           target,
-          tasks,
+          tasks: tasks as ExportedTaskInput[],
           itemLinkStore: linkStore,
           commentLinkStore,
         });
@@ -473,11 +475,10 @@ export function createForgejoSyncProvider(
 
         return {
           commentLinks: pushCommentsResult.commentLinks,
-          taskLinks: lastPushResult.createdLinks.map((link) => ({
-            localTaskId: link.taskId,
-            externalId: link.externalId,
-            sourceUrl: lastPushResult?.taskUpdates.find((update) => update.taskId === link.taskId)
-              ?.sourceUrl,
+          taskLinks: lastPushResult.taskUpdates.map((update) => ({
+            localTaskId: update.taskId as never,
+            externalId: update.externalId,
+            sourceUrl: update.sourceUrl,
           })),
         };
       } catch (error) {
@@ -491,35 +492,6 @@ export function createForgejoSyncProvider(
         });
         throw error;
       }
-    },
-    mapToTask(external: ExternalTask, project: Project): Task {
-      return {
-        id: createImportedTaskId(external.externalId),
-        title: external.title,
-        status: normalizeTaskStatus(external.status),
-        priority: normalizeTaskPriority(external.priority),
-        projectId: project.id,
-        labels: [...(external.labels ?? [])],
-        assignees: [...(external.assignees ?? [])],
-        externalId: external.externalId,
-        sourceUrl: external.sourceUrl,
-        createdAt: external.createdAt ?? external.updatedAt ?? DEFAULT_TIMESTAMP,
-        updatedAt: external.updatedAt ?? external.createdAt ?? DEFAULT_TIMESTAMP,
-      };
-    },
-    mapFromTask(task: TaskPushPayload): ExternalTask {
-      return {
-        externalId: task.externalId ?? String(task.id),
-        title: task.title,
-        description: task.description,
-        status: task.status,
-        priority: task.priority,
-        labels: [...task.labels],
-        assignees: [...task.assignees],
-        sourceUrl: task.sourceUrl,
-        createdAt: task.createdAt,
-        updatedAt: task.updatedAt,
-      };
     },
     getState(): ForgejoProviderState {
       return {
@@ -615,24 +587,4 @@ export function classifyForgejoSyncError(error: unknown): ForgejoSyncErrorClassi
   }
 
   return { kind: "unknown", retryable: true, summary: message };
-}
-
-function normalizeTaskStatus(status: string | undefined): Task["status"] {
-  if (status === "done" || status === "canceled") {
-    return status;
-  }
-
-  if (status && OPEN_STATUSES.has(status as Task["status"])) {
-    return status as Task["status"];
-  }
-
-  return "active";
-}
-
-function normalizeTaskPriority(priority: string | undefined): Task["priority"] {
-  if (priority === "low" || priority === "medium" || priority === "high") {
-    return priority;
-  }
-
-  return DEFAULT_PRIORITY;
 }

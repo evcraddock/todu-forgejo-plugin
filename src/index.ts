@@ -16,11 +16,14 @@ export {
   type ForgejoProviderSettings,
 } from "@/forgejo-config";
 export {
+  createForgejoActorRef,
   createForgejoAuthorizationHeader,
   createForgejoCommentSourceUrl,
   createForgejoIssueSourceUrl,
   createInMemoryForgejoIssueClient,
+  getForgejoActorDisplayName,
   type CreateForgejoIssueInput,
+  type ForgejoActorRef,
   type ForgejoComment,
   type ForgejoHttpClientOptions,
   type ForgejoIssue,
@@ -64,7 +67,7 @@ export {
   createForgejoPriorityFromTask,
   createForgejoStatusFromTask,
   getNormalForgejoLabels,
-  mapForgejoIssueToExternalTask,
+  mapForgejoIssueToImportedTask,
   mergeForgejoLabels,
   normalizeForgejoIssuePriority,
   normalizeForgejoIssueStatus,

@@ -1,9 +1,16 @@
-import type { ExternalTask, Task, TaskStatus, TaskWithDetail } from "@todu/core";
-
 import type {
-  CreateForgejoIssueInput,
-  ForgejoIssue,
-  UpdateForgejoIssueInput,
+  ExportedTaskInput,
+  ImportedTaskInput,
+  Task,
+  TaskStatus,
+  TaskWithDetail,
+} from "@todu/core";
+
+import {
+  createForgejoActorRef,
+  type CreateForgejoIssueInput,
+  type ForgejoIssue,
+  type UpdateForgejoIssueInput,
 } from "@/forgejo-client";
 
 const OPEN_STATUS_PRECEDENCE: TaskStatus[] = ["active", "inprogress", "waiting"];
@@ -30,10 +37,18 @@ export interface ForgejoFieldMapping {
   status: TaskStatus;
   priority: Task["priority"];
   labels: string[];
-  assignees: string[];
 }
 
-export function mapForgejoIssueToExternalTask(issue: ForgejoIssue): ExternalTask {
+export interface ForgejoLegacyPushTaskInput {
+  title: string;
+  description?: string;
+  status: TaskStatus;
+  priority: Task["priority"];
+  labels: string[];
+  assignees?: string[];
+}
+
+export function mapForgejoIssueToImportedTask(issue: ForgejoIssue): ImportedTaskInput {
   const normalizedStatus = normalizeForgejoIssueStatus(issue.state, issue.labels);
   const normalizedPriority = normalizeForgejoIssuePriority(issue.labels);
 
@@ -44,7 +59,10 @@ export function mapForgejoIssueToExternalTask(issue: ForgejoIssue): ExternalTask
     status: normalizedStatus.status,
     priority: normalizedPriority.priority,
     labels: getNormalForgejoLabels(issue.labels),
-    assignees: [...issue.assignees],
+    assignees: issue.assignees.flatMap((assignee) => {
+      const normalized = createForgejoActorRef(assignee);
+      return normalized ? [{ ...normalized }] : [];
+    }),
     sourceUrl: issue.sourceUrl,
     createdAt: issue.createdAt,
     updatedAt: issue.updatedAt,
@@ -52,7 +70,9 @@ export function mapForgejoIssueToExternalTask(issue: ForgejoIssue): ExternalTask
   };
 }
 
-export function createForgejoIssueCreateFromTask(task: TaskWithDetail): CreateForgejoIssueInput {
+export function createForgejoIssueCreateFromTask(
+  task: TaskWithDetail | ExportedTaskInput | ForgejoLegacyPushTaskInput
+): CreateForgejoIssueInput {
   const normalizedStatus = createForgejoStatusFromTask(task.status);
   const normalizedPriority = createForgejoPriorityFromTask(task.priority);
 
@@ -65,10 +85,13 @@ export function createForgejoIssueCreateFromTask(task: TaskWithDetail): CreateFo
       normalizedStatus.statusLabel,
       normalizedPriority.priorityLabel
     ),
+    assignees: getOutboundForgejoAssignees(task),
   };
 }
 
-export function createForgejoIssueUpdateFromTask(task: TaskWithDetail): UpdateForgejoIssueInput {
+export function createForgejoIssueUpdateFromTask(
+  task: TaskWithDetail | ExportedTaskInput | ForgejoLegacyPushTaskInput
+): UpdateForgejoIssueInput {
   return createForgejoIssueCreateFromTask(task);
 }
 
@@ -186,4 +209,27 @@ function parseTaskStatusFromLabel(label: string): TaskStatus {
 
 function parseTaskPriorityFromLabel(label: string): Task["priority"] {
   return label.slice(PRIORITY_LABEL_PREFIX.length) as Task["priority"];
+}
+
+function getOutboundForgejoAssignees(
+  task: TaskWithDetail | ExportedTaskInput | ForgejoLegacyPushTaskInput
+): string[] | undefined {
+  if ("assignees" in task && Array.isArray(task.assignees)) {
+    const assignees = task.assignees.flatMap((assignee) => {
+      if (typeof assignee === "string") {
+        const normalized = assignee.trim();
+        return normalized ? [normalized] : [];
+      }
+
+      const normalized =
+        assignee.externalLogin?.trim() ||
+        assignee.displayName?.trim() ||
+        assignee.externalAccountId?.trim();
+      return normalized ? [normalized] : [];
+    });
+
+    return assignees.length > 0 ? assignees : undefined;
+  }
+
+  return undefined;
 }

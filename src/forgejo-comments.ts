@@ -1,13 +1,22 @@
 import type {
-  ExternalComment,
+  ExportedCommentInput,
+  ExportedTaskInput,
+  ImportedCommentInput,
   IntegrationBinding,
   Note,
   NoteId,
   SyncProviderPushCommentLink,
+  TaskPriority,
   TaskPushPayload,
+  TaskStatus,
 } from "@todu/core";
 
-import type { ForgejoComment, ForgejoIssueClient } from "@/forgejo-client";
+import {
+  createForgejoActorRef,
+  getForgejoActorDisplayName,
+  type ForgejoComment,
+  type ForgejoIssueClient,
+} from "@/forgejo-client";
 import type { ForgejoCommentLink, ForgejoCommentLinkStore } from "@/forgejo-comment-links";
 import type { ForgejoItemLink, ForgejoItemLinkStore } from "@/forgejo-links";
 
@@ -16,6 +25,19 @@ const TODU_ATTRIBUTION_PREFIX = "_Synced from todu comment by @";
 const ATTRIBUTION_SUFFIX_PATTERN = / on \d{4}-\d{2}-\d{2}T[\d:.]+Z_$/;
 const IMPORTED_COMMENT_LINK_PREFIX = "external:";
 const SYNC_EXTERNAL_ID_TAG_PREFIX = "sync:externalId:";
+const TODU_COMMENT_AUTHOR = "todu";
+
+interface ForgejoLegacyPushTask {
+  id: string;
+  comments: Note[];
+  title: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  labels: string[];
+}
+
+type ForgejoPushTask = ExportedTaskInput | TaskPushPayload | ForgejoLegacyPushTask;
+type ForgejoPushComment = ExportedCommentInput | Note;
 
 export function formatForgejoAttribution(author: string, timestamp: string): string {
   return `_Synced from Forgejo comment by @${author} on ${timestamp}_`;
@@ -55,12 +77,12 @@ export function hasForgejoAttribution(body: string): boolean {
   );
 }
 
-function hasImportedForgejoSyncTag(note: Note): boolean {
+function hasImportedForgejoSyncTag(note: Pick<Note, "tags">): boolean {
   return note.tags.some((tag) => tag.startsWith(SYNC_EXTERNAL_ID_TAG_PREFIX));
 }
 
 export interface PullCommentsResult {
-  comments: ExternalComment[];
+  comments: ImportedCommentInput[];
   createdLinks: ForgejoCommentLink[];
 }
 
@@ -86,7 +108,7 @@ export async function pullComments(input: {
     context: PullCommentsIssueErrorContext
   ) => "continue" | "throw" | Promise<"continue" | "throw">;
 }): Promise<PullCommentsResult> {
-  const comments: ExternalComment[] = [];
+  const comments: ImportedCommentInput[] = [];
   const createdLinks: ForgejoCommentLink[] = [];
 
   const issueNumbers = input.issueNumbers ? new Set(input.issueNumbers) : null;
@@ -114,15 +136,17 @@ export async function pullComments(input: {
 
     for (const forgejoComment of forgejoComments) {
       const strippedBody = stripAttribution(forgejoComment.body);
+      const authorDisplayName = getForgejoActorDisplayName(forgejoComment.author);
+      const normalizedAuthor = createForgejoActorRef(forgejoComment.author);
 
       comments.push({
         externalId: String(forgejoComment.id),
         externalTaskId: itemLink.externalId,
         body: formatAttributedBody(
-          formatForgejoAttribution(forgejoComment.author, forgejoComment.createdAt),
+          formatForgejoAttribution(authorDisplayName, forgejoComment.createdAt),
           strippedBody
         ),
-        author: forgejoComment.author,
+        author: normalizedAuthor ? { ...normalizedAuthor } : undefined,
         createdAt: forgejoComment.createdAt,
         updatedAt: forgejoComment.updatedAt,
         raw: forgejoComment,
@@ -175,7 +199,7 @@ export async function pushComments(input: {
     owner: string;
     repo: string;
   };
-  tasks: TaskPushPayload[];
+  tasks: ForgejoPushTask[];
   itemLinkStore: ForgejoItemLinkStore;
   commentLinkStore: ForgejoCommentLinkStore;
 }): Promise<PushCommentsResult> {
@@ -184,14 +208,14 @@ export async function pushComments(input: {
   const updatedComments: ForgejoComment[] = [];
 
   for (const task of input.tasks) {
-    const itemLink = input.itemLinkStore.getByTaskId(input.binding.id, task.id);
+    const localTaskId = getLocalTaskId(task);
+    const itemLink = input.itemLinkStore.getByTaskId(input.binding.id, localTaskId as never);
     if (!itemLink) {
       continue;
     }
 
-    const localTaskId = task.id;
-
-    for (const note of task.comments) {
+    for (const comment of task.comments as ForgejoPushComment[]) {
+      const note = toPushNote(comment);
       const existingLink = input.commentLinkStore.getByNoteId(input.binding.id, note.id);
 
       if (
@@ -206,21 +230,19 @@ export async function pushComments(input: {
           input,
           note,
           existingLink,
-          itemLink,
           updatedComments
         );
         commentLinks.push(
-          createPushCommentLink(note.id, localTaskId, existingLink.forgejoCommentId, updated)
+          createPushCommentLink(
+            note.id,
+            itemLink.externalId,
+            existingLink.forgejoCommentId,
+            updated
+          )
         );
       } else {
-        const created = await createForgejoCommentFromNote(
-          input,
-          note,
-          task,
-          itemLink,
-          createdComments
-        );
-        commentLinks.push(createPushCommentLink(note.id, localTaskId, created.id, created));
+        const created = await createForgejoCommentFromNote(input, note, itemLink, createdComments);
+        commentLinks.push(createPushCommentLink(note.id, itemLink.externalId, created.id, created));
       }
     }
   }
@@ -228,9 +250,34 @@ export async function pushComments(input: {
   return { commentLinks, createdComments, updatedComments };
 }
 
+function getLocalTaskId(task: ForgejoPushTask): string {
+  return "localTaskId" in task ? String(task.localTaskId) : String(task.id);
+}
+
+function toPushNote(
+  comment: ForgejoPushComment
+): Pick<Note, "id" | "content" | "tags" | "author" | "createdAt"> {
+  if ("localNoteId" in comment) {
+    return {
+      id: comment.localNoteId,
+      content: comment.body,
+      tags: [],
+      author: TODU_COMMENT_AUTHOR,
+      createdAt: comment.createdAt,
+    };
+  }
+
+  return {
+    id: comment.id,
+    content: comment.content,
+    tags: comment.tags,
+    author: comment.author,
+    createdAt: comment.createdAt,
+  };
+}
+
 async function updateForgejoCommentIfNeeded(
   input: {
-    binding: IntegrationBinding;
     issueClient: ForgejoIssueClient;
     target: {
       baseUrl: string;
@@ -240,9 +287,8 @@ async function updateForgejoCommentIfNeeded(
     };
     commentLinkStore: ForgejoCommentLinkStore;
   },
-  note: Note,
+  note: Pick<Note, "id" | "content" | "author" | "createdAt">,
   existingLink: ForgejoCommentLink,
-  _itemLink: ForgejoItemLink,
   updatedComments: ForgejoComment[]
 ): Promise<ForgejoComment | null> {
   const localBody = stripAttribution(note.content);
@@ -296,8 +342,7 @@ async function createForgejoCommentFromNote(
     };
     commentLinkStore: ForgejoCommentLinkStore;
   },
-  note: Note,
-  task: TaskPushPayload,
+  note: Pick<Note, "id" | "content" | "author" | "createdAt">,
   itemLink: ForgejoItemLink,
   createdComments: ForgejoComment[]
 ): Promise<ForgejoComment> {
@@ -317,7 +362,7 @@ async function createForgejoCommentFromNote(
 
   input.commentLinkStore.save({
     bindingId: input.binding.id,
-    taskId: task.id,
+    taskId: itemLink.taskId,
     noteId: note.id,
     issueNumber: itemLink.issueNumber,
     forgejoCommentId: createdComment.id,
