@@ -1,3 +1,5 @@
+import type { ExternalActorRef } from "@todu/core";
+
 import type { ForgejoRepositoryTarget as ForgejoRepositoryRef } from "@/forgejo-binding";
 import type { ForgejoAuthType } from "@/forgejo-config";
 import { formatForgejoIssueExternalId } from "@/forgejo-ids";
@@ -7,14 +9,18 @@ export interface ForgejoRepositoryTarget extends ForgejoRepositoryRef {
   apiBaseUrl: string;
 }
 
+export type ForgejoActorRef = ExternalActorRef;
+export type ForgejoActorLike = ForgejoActorRef | string;
+
 export interface ForgejoIssue {
+  [key: string]: unknown;
   number: number;
   externalId: string;
   title: string;
   body?: string;
   state: "open" | "closed";
   labels: string[];
-  assignees: string[];
+  assignees: ForgejoActorLike[];
   sourceUrl?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -25,7 +31,7 @@ export interface ForgejoComment {
   id: number;
   issueNumber: number;
   body: string;
-  author: string;
+  author?: ForgejoActorLike;
   sourceUrl?: string;
   createdAt: string;
   updatedAt?: string;
@@ -36,6 +42,7 @@ export interface CreateForgejoIssueInput {
   body?: string;
   state?: ForgejoIssue["state"];
   labels?: string[];
+  assignees?: string[];
 }
 
 export interface UpdateForgejoIssueInput {
@@ -43,6 +50,7 @@ export interface UpdateForgejoIssueInput {
   body?: string;
   state?: ForgejoIssue["state"];
   labels?: string[];
+  assignees?: string[];
 }
 
 export interface ListForgejoIssuesOptions {
@@ -103,6 +111,53 @@ export interface InMemoryForgejoIssueClient extends ForgejoIssueClient {
 export interface ForgejoHttpClientOptions {
   authType?: ForgejoAuthType;
   fetchImpl?: typeof fetch;
+}
+
+export function createForgejoActorRef(
+  actor: Partial<ForgejoActorRef> | string | null | undefined
+): ForgejoActorRef | undefined {
+  if (typeof actor === "string") {
+    const normalized = actor.trim();
+    if (!normalized) {
+      return undefined;
+    }
+
+    return {
+      externalLogin: normalized,
+      displayName: normalized,
+      raw: actor,
+    };
+  }
+
+  if (!actor) {
+    return undefined;
+  }
+
+  const normalized: ForgejoActorRef = {
+    ...(typeof actor.externalAccountId === "string" && actor.externalAccountId.trim()
+      ? { externalAccountId: actor.externalAccountId.trim() }
+      : {}),
+    ...(typeof actor.externalLogin === "string" && actor.externalLogin.trim()
+      ? { externalLogin: actor.externalLogin.trim() }
+      : {}),
+    ...(typeof actor.displayName === "string" && actor.displayName.trim()
+      ? { displayName: actor.displayName.trim() }
+      : {}),
+    ...(actor.raw !== undefined ? { raw: actor.raw } : {}),
+  };
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+export function getForgejoActorDisplayName(
+  actor: ForgejoActorLike | undefined,
+  fallback = "unknown"
+): string {
+  if (typeof actor === "string") {
+    return actor.trim() || fallback;
+  }
+
+  return actor?.displayName ?? actor?.externalLogin ?? actor?.externalAccountId ?? fallback;
 }
 
 export function createForgejoIssueSourceUrl(
@@ -174,10 +229,17 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
   const cloneIssue = (issue: ForgejoIssue): ForgejoIssue => ({
     ...issue,
     labels: [...issue.labels],
-    assignees: [...issue.assignees],
+    assignees: issue.assignees.map((assignee) =>
+      typeof assignee === "string" ? assignee : { ...assignee }
+    ),
   });
 
-  const cloneComment = (comment: ForgejoComment): ForgejoComment => ({ ...comment });
+  const cloneComment = (comment: ForgejoComment): ForgejoComment => ({
+    ...comment,
+    ...(comment.author
+      ? { author: typeof comment.author === "string" ? comment.author : { ...comment.author } }
+      : {}),
+  });
 
   const findCommentById = (
     target: ForgejoRepositoryTarget,
@@ -219,7 +281,9 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
                 issueNumber: issue.number,
               }),
             sourceUrl: issue.sourceUrl ?? createForgejoIssueSourceUrl(target, issue.number),
-            assignees: [...(issue.assignees ?? [])],
+            assignees: (issue.assignees ?? [])
+              .map((assignee) => createForgejoActorRef(assignee))
+              .filter((assignee): assignee is ForgejoActorRef => assignee !== undefined),
           });
         })
       );
@@ -290,7 +354,10 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
         body: input.body,
         state: input.state ?? "open",
         labels,
-        assignees: [],
+        assignees: (input.assignees ?? []).flatMap((assignee) => {
+          const normalized = createForgejoActorRef(assignee);
+          return normalized ? [normalized] : [];
+        }),
         sourceUrl: createForgejoIssueSourceUrl(target, nextIssueNumber),
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -318,6 +385,13 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
         body: input.body ?? existingIssue.body,
         state: input.state ?? existingIssue.state,
         labels,
+        assignees:
+          input.assignees !== undefined
+            ? input.assignees.flatMap((assignee) => {
+                const normalized = createForgejoActorRef(assignee);
+                return normalized ? [normalized] : [];
+              })
+            : existingIssue.assignees,
         updatedAt: new Date().toISOString(),
       };
 
@@ -352,7 +426,10 @@ export function createInMemoryForgejoIssueClient(): InMemoryForgejoIssueClient {
         id: commentId,
         issueNumber,
         body,
-        author: "forgejo-token-user",
+        author: createForgejoActorRef({
+          externalLogin: "forgejo-token-user",
+          displayName: "forgejo-token-user",
+        }),
         sourceUrl: createForgejoCommentSourceUrl(target, issueNumber, commentId),
         createdAt: timestamp,
         updatedAt: timestamp,

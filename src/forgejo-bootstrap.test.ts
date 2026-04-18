@@ -53,6 +53,7 @@ describe("forgejo bootstrap", () => {
         title: "Closed issue",
         state: "closed",
         labels: [],
+        assigneeActorIds: [],
         assignees: [],
         createdAt: "2026-03-12T00:00:00.000Z",
         updatedAt: "2026-03-12T00:00:00.000Z",
@@ -76,7 +77,9 @@ describe("forgejo bootstrap", () => {
     expect(result.tasks[0].status).toBe("inprogress");
     expect(result.tasks[0].priority).toBe("high");
     expect(result.tasks[0].labels).toEqual(["bug"]);
-    expect(result.tasks[0].assignees).toEqual(["erik"]);
+    expect(result.tasks[0].assignees).toEqual([
+      expect.objectContaining({ externalLogin: "erik", displayName: "erik" }),
+    ]);
     expect(result.createdLinks).toHaveLength(1);
     expect(linkStore.getByIssueNumber(binding.id, 1)).toMatchObject({
       externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#1",
@@ -84,7 +87,7 @@ describe("forgejo bootstrap", () => {
     });
   });
 
-  it("exports active tasks to forgejo with normalized fields and creates missing labels", async () => {
+  it("exports active tasks to forgejo with normalized fields, assignees, and creates missing labels", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();
     const tasks: TaskPushPayload[] = [
@@ -96,7 +99,8 @@ describe("forgejo bootstrap", () => {
         priority: "high",
         projectId: binding.projectId,
         labels: ["bug"],
-        assignees: [],
+        assigneeActorIds: [],
+        assignees: ["caradoc"],
         comments: [],
         createdAt: "2026-03-12T00:00:00.000Z",
         updatedAt: "2026-03-12T00:00:00.000Z",
@@ -108,6 +112,7 @@ describe("forgejo bootstrap", () => {
         priority: "medium",
         projectId: binding.projectId,
         labels: [],
+        assigneeActorIds: [],
         assignees: [],
         comments: [],
         createdAt: "2026-03-12T00:00:00.000Z",
@@ -129,14 +134,19 @@ describe("forgejo bootstrap", () => {
     expect(result.createdIssues).toHaveLength(1);
     expect(result.createdIssues[0].state).toBe("open");
     expect(result.createdIssues[0].labels).toEqual(["bug", "status:active", "priority:high"]);
+    expect(result.createdIssues[0].assignees).toEqual([
+      expect.objectContaining({ externalLogin: "caradoc", displayName: "caradoc" }),
+    ]);
     expect(issueClient.snapshotLabels(target)).toContain("bug");
     expect(result.createdLinks).toHaveLength(1);
     expect(result.createdLinks[0].lastMirroredAt).toBeDefined();
-    expect(tasks[0].externalId).toBeDefined();
-    expect(tasks[0].sourceUrl).toBe(
-      "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test/issues/1"
-    );
-    expect(tasks[1].externalId).toBeUndefined();
+    expect(result.taskUpdates).toEqual([
+      expect.objectContaining({
+        taskId: String(tasks[0].id),
+        externalId: expect.any(String),
+        sourceUrl: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test/issues/1",
+      }),
+    ]);
   });
 
   it("links to existing matching external ids instead of creating duplicates", async () => {
@@ -150,6 +160,7 @@ describe("forgejo bootstrap", () => {
         title: "Existing issue",
         state: "open",
         labels: [],
+        assigneeActorIds: [],
         assignees: [],
         createdAt: "2026-03-12T00:00:00.000Z",
         updatedAt: "2026-03-12T00:00:00.000Z",
@@ -165,6 +176,7 @@ describe("forgejo bootstrap", () => {
         priority: "medium",
         projectId: binding.projectId,
         labels: ["needs-review"],
+        assigneeActorIds: [],
         assignees: [],
         comments: [],
         createdAt: "2026-03-12T00:00:00.000Z",
@@ -245,11 +257,10 @@ describe("forgejo bootstrap", () => {
     expect(result).toMatchObject({
       issueReadCount: 0,
       skippedLinkedTasks: 1,
-      updatedIssues: [],
     });
   });
 
-  it("hydrates older linked tasks once before deciding whether to skip push", async () => {
+  it("hydrates older linked tasks once and skips push when the remote mirror is newer", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();
     issueClient.seedIssues(target, [
@@ -303,9 +314,63 @@ describe("forgejo bootstrap", () => {
       skippedLinkedTasks: 1,
       updatedIssues: [],
     });
-    expect(linkStore.getByTaskId(binding.id, createTaskId("task-7"))?.lastMirroredAt).toBe(
+    expect(linkStore.getByTaskId(binding.id, createTaskId("task-7"))?.lastMirroredAt).toEqual(
       "2026-03-12T02:00:00.000Z"
     );
+  });
+
+  it("does not update a linked issue when the remote mirror is newer even if assignees differ", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    issueClient.seedIssues(target, [
+      {
+        number: 9,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#9",
+        title: "test actors",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T03:00:00.000Z",
+      },
+    ]);
+    linkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-remote-newer"),
+      issueNumber: 9,
+      externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#9",
+      lastMirroredAt: "2026-03-12T03:00:00.000Z",
+    });
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      baseUrl: target.baseUrl,
+      apiBaseUrl: target.apiBaseUrl,
+      owner: target.owner,
+      repo: target.repo,
+      tasks: [
+        {
+          id: createTaskId("task-remote-newer"),
+          title: "test actors",
+          description: undefined,
+          status: "active",
+          priority: "medium",
+          projectId: binding.projectId,
+          labels: [],
+          assignees: ["caradoc"],
+          comments: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+          updatedAt: "2026-03-12T02:00:00.000Z",
+          externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#9",
+        },
+      ],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.updatedIssues).toHaveLength(0);
+    expect(result.skippedLinkedTasks).toBe(1);
+    expect(issueClient.snapshotIssues(target)[0].assignees).toEqual([]);
   });
 
   it("checks forgejo labels once per push cycle", async () => {

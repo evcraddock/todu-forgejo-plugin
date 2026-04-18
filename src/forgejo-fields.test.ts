@@ -15,6 +15,7 @@ describe("forgejo fields", () => {
       priority: "high",
       projectId: "project-1" as never,
       labels: ["bug", "priority:low"],
+      assigneeActorIds: [],
       assignees: [],
       createdAt: "2026-03-12T00:00:00.000Z",
       updatedAt: "2026-03-12T00:00:00.000Z",

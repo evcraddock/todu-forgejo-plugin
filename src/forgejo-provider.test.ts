@@ -34,6 +34,7 @@ const project = {
   name: "roadmap",
   status: "active" as const,
   priority: "medium" as const,
+  authorizedAssigneeActorIds: [],
   createdAt: "2026-03-12T00:00:00.000Z",
   updatedAt: "2026-03-12T00:00:00.000Z",
 };
@@ -100,19 +101,19 @@ describe("forgejo provider", () => {
     });
   });
 
-  it("maps external tasks into local tasks with normalized defaults", () => {
+  it("returns empty normalized payloads for an empty repo", async () => {
     const provider = createForgejoSyncProvider({ issueClient: createInMemoryForgejoIssueClient() });
-    const task = provider.mapToTask(
-      {
-        externalId: "https://code.example.com/acme/roadmap#42",
-        title: "Ship roadmap",
+    await provider.initialize({
+      settings: {
+        baseUrl: "https://code.example.com",
+        token: "secret-token",
       },
-      project
-    );
+    });
 
-    expect(task.id).toBe("forgejo:https://code.example.com/acme/roadmap#42");
-    expect(task.status).toBe("active");
-    expect(task.priority).toBe("medium");
+    await expect(provider.pull(createBinding(), project)).resolves.toEqual({
+      tasks: [],
+      comments: [],
+    });
   });
 });
 
@@ -214,7 +215,7 @@ describe("forgejo provider runtime integration", () => {
     expect(result.comments).toHaveLength(1);
     expect(result.comments?.[0]).toMatchObject({
       externalId: "11",
-      author: "alice",
+      author: expect.objectContaining({ externalLogin: "alice", displayName: "alice" }),
     });
     expect(result.comments?.[0].body).toContain("Imported comment body");
     expect(provider.getState().commentLinks).toHaveLength(1);
@@ -396,7 +397,7 @@ describe("forgejo provider runtime integration", () => {
     expect(callCount).toBe(1);
   });
 
-  it("records loop prevention writes during push", async () => {
+  it("records loop prevention writes during push and includes outbound assignees", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const loopPreventionStore = createForgejoLoopPreventionStore();
     const provider = createForgejoSyncProvider({
@@ -421,7 +422,8 @@ describe("forgejo provider runtime integration", () => {
         priority: "medium",
         projectId: createBinding().projectId,
         labels: [],
-        assignees: [],
+        assigneeActorIds: [],
+        assignees: ["caradoc"],
         comments: [],
         createdAt: "2026-03-12T00:00:00.000Z",
         updatedAt: "2026-03-12T00:00:00.000Z",
@@ -433,6 +435,9 @@ describe("forgejo provider runtime integration", () => {
     const writes = loopPreventionStore.listAll();
     expect(writes.length).toBeGreaterThan(0);
     expect(writes[0].key).toContain("issue:");
+    expect(issueClient.snapshotIssues(target)[0].assignees).toEqual([
+      expect.objectContaining({ externalLogin: "caradoc", displayName: "caradoc" }),
+    ]);
   });
 
   it("records closed orphaned issues in loop prevention and push summary logging", async () => {
@@ -526,6 +531,7 @@ describe("forgejo provider runtime integration", () => {
           priority: "medium",
           projectId: createBinding().projectId,
           labels: [],
+          assigneeActorIds: [],
           assignees: [],
           comments: [],
           createdAt: "2026-03-12T00:00:00.000Z",
@@ -595,6 +601,7 @@ describe("forgejo provider runtime integration", () => {
       priority: "medium",
       projectId: createBinding().projectId,
       labels: [],
+      assigneeActorIds: [],
       assignees: [],
       comments: [],
       createdAt: "2026-03-12T00:00:00.000Z",

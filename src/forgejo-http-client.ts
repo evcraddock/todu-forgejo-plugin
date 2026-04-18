@@ -1,5 +1,6 @@
 import type { ForgejoAuthType } from "@/forgejo-config";
 import {
+  createForgejoActorRef,
   createForgejoAuthorizationHeader,
   type CreateForgejoIssueInput,
   type ForgejoComment,
@@ -13,13 +14,20 @@ import {
 } from "@/forgejo-client";
 import { formatForgejoIssueExternalId } from "@/forgejo-ids";
 
+interface ForgejoApiUser {
+  id?: number | string;
+  login?: string;
+  username?: string;
+  full_name?: string;
+}
+
 interface ForgejoApiIssue {
   number: number;
   title: string;
   body?: string | null;
   state: "open" | "closed";
   labels: Array<{ name: string } | string>;
-  assignees?: Array<{ login?: string; username?: string }>;
+  assignees?: ForgejoApiUser[];
   html_url: string;
   created_at: string;
   updated_at: string;
@@ -34,7 +42,7 @@ interface ForgejoApiLabel {
 interface ForgejoApiComment {
   id: number;
   body: string;
-  user?: { login?: string; username?: string } | null;
+  user?: ForgejoApiUser | null;
   html_url: string;
   created_at: string;
   updated_at: string;
@@ -44,8 +52,20 @@ function normalizeLabels(labels: ForgejoApiIssue["labels"]): string[] {
   return labels.map((label) => (typeof label === "string" ? label : label.name));
 }
 
-function normalizeAssignees(assignees?: Array<{ login?: string; username?: string }>): string[] {
-  return (assignees ?? []).map((assignee) => assignee.login ?? assignee.username ?? "unknown");
+function normalizeForgejoActor(user?: ForgejoApiUser | null) {
+  return createForgejoActorRef({
+    ...(user?.id !== undefined ? { externalAccountId: String(user.id) } : {}),
+    ...((user?.login ?? user?.username) ? { externalLogin: user?.login ?? user?.username } : {}),
+    ...(user?.full_name ? { displayName: user.full_name } : {}),
+    ...(user ? { raw: user } : {}),
+  });
+}
+
+function normalizeAssignees(assignees?: ForgejoApiUser[]) {
+  return (assignees ?? []).flatMap((assignee) => {
+    const normalized = normalizeForgejoActor(assignee);
+    return normalized ? [normalized] : [];
+  });
 }
 
 function mapApiIssue(target: ForgejoRepositoryTarget, raw: ForgejoApiIssue): ForgejoIssue {
@@ -78,7 +98,7 @@ function mapApiComment(
     id: raw.id,
     issueNumber,
     body: raw.body,
-    author: raw.user?.login ?? raw.user?.username ?? "unknown",
+    author: normalizeForgejoActor(raw.user),
     sourceUrl: raw.html_url,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
@@ -243,6 +263,7 @@ export function createHttpForgejoIssueClient(
           title: input.title,
           body: input.body,
           labels: labelIds,
+          assignees: input.assignees,
         }
       );
 
@@ -262,6 +283,7 @@ export function createHttpForgejoIssueClient(
           ...(input.title != null ? { title: input.title } : {}),
           ...(input.body != null ? { body: input.body } : {}),
           ...(input.state != null ? { state: input.state } : {}),
+          ...(input.assignees != null ? { assignees: input.assignees } : {}),
         }
       );
 

@@ -1,17 +1,21 @@
-import type { ExternalTask, IntegrationBinding, TaskPushPayload } from "@todu/core";
+import type {
+  ExportedTaskInput,
+  ImportedTaskInput,
+  IntegrationBinding,
+  Note,
+  TaskPushPayload,
+  TaskStatus,
+  TaskPriority,
+} from "@todu/core";
 
-import {
-  createForgejoIssueSourceUrl,
-  type ForgejoIssue,
-  type ForgejoIssueClient,
-} from "@/forgejo-client";
 import {
   createForgejoIssueCreateFromTask,
   createForgejoIssueUpdateFromTask,
-  mapForgejoIssueToExternalTask,
+  mapForgejoIssueToImportedTask,
 } from "@/forgejo-fields";
-import { parseForgejoIssueExternalId } from "@/forgejo-ids";
+import { type ForgejoIssue, type ForgejoIssueClient } from "@/forgejo-client";
 import type { ForgejoCommentLinkStore } from "@/forgejo-comment-links";
+import { parseForgejoIssueExternalId } from "@/forgejo-ids";
 import {
   createLinkFromIssue,
   createLinkFromTask,
@@ -19,20 +23,37 @@ import {
   type ForgejoItemLinkStore,
 } from "@/forgejo-links";
 
-const TASK_BOOTSTRAP_EXPORT_STATUSES = new Set<TaskPushPayload["status"]>([
+interface ForgejoLegacyPushTask {
+  id: string;
+  title: string;
+  description?: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  labels: string[];
+  assignees?: string[];
+  comments: Note[];
+  externalId?: string;
+  sourceUrl?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+type ForgejoPushTask = ExportedTaskInput | TaskPushPayload | ForgejoLegacyPushTask;
+
+const TASK_BOOTSTRAP_EXPORT_STATUSES = new Set<ForgejoPushTask["status"]>([
   "active",
   "inprogress",
   "waiting",
 ]);
 
 export interface ForgejoBootstrapImportResult {
-  tasks: ExternalTask[];
+  tasks: ImportedTaskInput[];
   createdLinks: ForgejoItemLink[];
   touchedIssueNumbers: number[];
 }
 
 export interface ForgejoBootstrapTaskUpdate {
-  taskId: TaskPushPayload["id"];
+  taskId: string;
   externalId: string;
   sourceUrl?: string;
 }
@@ -69,7 +90,7 @@ export async function bootstrapForgejoIssuesToTasks(input: {
     input.since ? { since: input.since } : undefined
   );
 
-  const tasks: ExternalTask[] = [];
+  const tasks: ImportedTaskInput[] = [];
   const createdLinks: ForgejoItemLink[] = [];
   const touchedIssueNumbers: number[] = [];
   const shouldImportClosedIssuesOnBootstrap =
@@ -104,7 +125,7 @@ export async function bootstrapForgejoIssuesToTasks(input: {
       });
     }
 
-    tasks.push(mapForgejoIssueToExternalTask(issue));
+    tasks.push(mapForgejoIssueToImportedTask(issue));
     touchedIssueNumbers.push(issue.number);
   }
 
@@ -121,7 +142,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
   apiBaseUrl: string;
   owner: string;
   repo: string;
-  tasks: TaskPushPayload[];
+  tasks: ForgejoPushTask[];
   issueClient: ForgejoIssueClient;
   linkStore: ForgejoItemLinkStore;
   commentLinkStore?: ForgejoCommentLinkStore;
@@ -154,19 +175,22 @@ export async function bootstrapTasksToForgejoIssues(input: {
     }
   };
 
-  const clearStaleTaskReferences = (taskId: TaskPushPayload["id"]): void => {
-    input.linkStore.remove(input.binding.id, taskId);
+  const clearStaleTaskReferences = (taskId: string): void => {
+    input.linkStore.remove(input.binding.id, taskId as ForgejoItemLink["taskId"]);
 
     if (!input.commentLinkStore) {
       return;
     }
 
-    for (const commentLink of input.commentLinkStore.listByTask(input.binding.id, taskId)) {
+    for (const commentLink of input.commentLinkStore.listByTask(
+      input.binding.id,
+      taskId as ForgejoItemLink["taskId"]
+    )) {
       input.commentLinkStore.remove(input.binding.id, commentLink.noteId);
     }
   };
 
-  const createIssueForTask = async (task: TaskPushPayload): Promise<boolean> => {
+  const createIssueForTask = async (task: ForgejoPushTask): Promise<boolean> => {
     if (!TASK_BOOTSTRAP_EXPORT_STATUSES.has(task.status)) {
       return false;
     }
@@ -179,19 +203,17 @@ export async function bootstrapTasksToForgejoIssues(input: {
 
     const createdLink = createLinkFromTask({
       binding: input.binding,
-      taskId: task.id,
+      taskId: getLocalTaskId(task) as ForgejoItemLink["taskId"],
       baseUrl: input.baseUrl,
       owner: input.owner,
       repo: input.repo,
       issueNumber: createdIssue.number,
       lastMirroredAt: createdIssue.updatedAt ?? createdIssue.createdAt,
     });
-    task.externalId = createdLink.externalId;
-    task.sourceUrl = createdIssue.sourceUrl;
     input.linkStore.save(createdLink);
     createdLinks.push(createdLink);
     taskUpdates.push({
-      taskId: task.id,
+      taskId: getLocalTaskId(task),
       externalId: createdLink.externalId,
       sourceUrl: createdIssue.sourceUrl,
     });
@@ -200,19 +222,19 @@ export async function bootstrapTasksToForgejoIssues(input: {
   };
 
   for (const task of input.tasks) {
-    const existingLink = input.linkStore.getByTaskId(input.binding.id, task.id);
+    const localTaskId = getLocalTaskId(task);
+    const existingLink = input.linkStore.getByTaskId(
+      input.binding.id,
+      localTaskId as ForgejoItemLink["taskId"]
+    );
     if (existingLink) {
-      task.externalId = existingLink.externalId;
-      task.sourceUrl ??= createForgejoIssueSourceUrl(target, existingLink.issueNumber);
-
       if (!existingLink.lastMirroredAt) {
         issueReadCount += 1;
         const existingIssue = await input.issueClient.getIssue(target, existingLink.issueNumber);
         hydratedLinkedTasks += 1;
-        task.sourceUrl = existingIssue?.sourceUrl ?? task.sourceUrl;
 
         if (!existingIssue) {
-          clearStaleTaskReferences(task.id);
+          clearStaleTaskReferences(localTaskId);
           await createIssueForTask(task);
           continue;
         }
@@ -245,7 +267,6 @@ export async function bootstrapTasksToForgejoIssues(input: {
           existingLink.issueNumber,
           issueUpdate
         );
-        task.sourceUrl = updatedIssue.sourceUrl;
         input.linkStore.save({
           ...existingLink,
           lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
@@ -256,7 +277,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
           throw error;
         }
 
-        clearStaleTaskReferences(task.id);
+        clearStaleTaskReferences(localTaskId);
         await createIssueForTask(task);
       }
       continue;
@@ -271,22 +292,20 @@ export async function bootstrapTasksToForgejoIssues(input: {
       );
 
       if (!existingIssue) {
-        clearStaleTaskReferences(task.id);
+        clearStaleTaskReferences(localTaskId);
         await createIssueForTask(task);
         continue;
       }
 
       const createdLink = createLinkFromTask({
         binding: input.binding,
-        taskId: task.id,
+        taskId: localTaskId as ForgejoItemLink["taskId"],
         baseUrl: input.baseUrl,
         owner: input.owner,
         repo: input.repo,
         issueNumber: matchingExternalId.issueNumber,
         lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
       });
-      task.externalId = createdLink.externalId;
-      task.sourceUrl ??= existingIssue.sourceUrl;
       input.linkStore.save(createdLink);
       createdLinks.push(createdLink);
 
@@ -301,7 +320,6 @@ export async function bootstrapTasksToForgejoIssues(input: {
           matchingExternalId.issueNumber,
           issueUpdate
         );
-        task.sourceUrl = updatedIssue.sourceUrl;
         input.linkStore.save({
           ...createdLink,
           lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
@@ -314,10 +332,10 @@ export async function bootstrapTasksToForgejoIssues(input: {
     await createIssueForTask(task);
   }
 
-  const currentTaskIds = new Set(input.tasks.map((task) => task.id));
+  const currentTaskIds = new Set(input.tasks.map((task) => getLocalTaskId(task)));
   const orphanedLinks = input.linkStore
     .list(input.binding.id)
-    .filter((link) => !currentTaskIds.has(link.taskId));
+    .filter((link) => !currentTaskIds.has(String(link.taskId)));
 
   for (const orphanedLink of orphanedLinks) {
     issueReadCount += 1;
@@ -360,6 +378,10 @@ export async function bootstrapTasksToForgejoIssues(input: {
   };
 }
 
+function getLocalTaskId(task: ForgejoPushTask): string {
+  return "localTaskId" in task ? String(task.localTaskId) : String(task.id);
+}
+
 function isForgejoIssueNotFoundError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /\b404\b/.test(message) || /issue not found/i.test(message);
@@ -380,7 +402,7 @@ function createForgejoIssueCloseFromDeletion(issue: ForgejoIssue): {
   };
 }
 
-function shouldPushTaskUpdate(task: TaskPushPayload, issue: ForgejoIssue | null): boolean {
+function shouldPushTaskUpdate(task: ForgejoPushTask, issue: ForgejoIssue | null): boolean {
   if (!issue) {
     return true;
   }
@@ -393,24 +415,23 @@ function shouldPushTaskUpdate(task: TaskPushPayload, issue: ForgejoIssue | null)
 }
 
 function shouldPushTaskUpdateFromMirroredAt(
-  task: TaskPushPayload,
+  task: ForgejoPushTask,
   lastMirroredAt: string | undefined
 ): boolean {
   if (!lastMirroredAt) {
     return true;
   }
 
-  const taskUpdatedAt = Date.parse(task.updatedAt);
-  const issueUpdatedAt = Date.parse(lastMirroredAt);
-
-  if (Number.isNaN(taskUpdatedAt) || Number.isNaN(issueUpdatedAt)) {
+  const taskUpdatedAt =
+    "updatedAt" in task && typeof task.updatedAt === "string" ? task.updatedAt : undefined;
+  if (!taskUpdatedAt) {
     return true;
   }
 
-  return taskUpdatedAt > issueUpdatedAt;
+  return taskUpdatedAt > lastMirroredAt;
 }
 
-function issueMatchesTask(task: TaskPushPayload, issue: ForgejoIssue): boolean {
+function issueMatchesTask(task: ForgejoPushTask, issue: ForgejoIssue): boolean {
   const expected = createForgejoIssueCreateFromTask(task);
 
   if (expected.title !== issue.title) {
@@ -435,21 +456,39 @@ function issueMatchesTask(task: TaskPushPayload, issue: ForgejoIssue): boolean {
     return false;
   }
 
+  const expectedAssignees = [...(expected.assignees ?? [])].sort();
+  const issueAssignees = issue.assignees
+    .flatMap((assignee) => {
+      if (typeof assignee === "string") {
+        return assignee ? [assignee] : [];
+      }
+
+      return assignee.externalLogin ?? assignee.displayName ?? assignee.externalAccountId ?? [];
+    })
+    .sort();
+  if (
+    expectedAssignees.length !== issueAssignees.length ||
+    expectedAssignees.some((assignee, index) => assignee !== issueAssignees[index])
+  ) {
+    return false;
+  }
+
   return true;
 }
 
 function getMatchingExternalId(
-  task: TaskPushPayload,
+  task: ForgejoPushTask,
   baseUrl: string,
   owner: string,
   repo: string
 ): { issueNumber: number } | null {
-  if (!task.externalId) {
+  const externalId = task.externalId;
+  if (!externalId) {
     return null;
   }
 
   try {
-    const parsedExternalId = parseForgejoIssueExternalId(task.externalId);
+    const parsedExternalId = parseForgejoIssueExternalId(externalId);
     if (
       parsedExternalId.baseUrl !== baseUrl ||
       parsedExternalId.owner !== owner ||
