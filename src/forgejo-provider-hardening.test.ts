@@ -329,6 +329,91 @@ describe("provider error classification coverage", () => {
     );
   });
 
+  it("reconciles legacy imported comment links to real local note ids before returning push links", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    linkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-1"),
+      issueNumber: 7,
+      externalId: "https://code.example.com/acme/roadmap#7",
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+    });
+
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+    commentLinkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-legacy"),
+      noteId: createNoteId("external:21"),
+      issueNumber: 7,
+      forgejoCommentId: 21,
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Imported body",
+    });
+
+    const provider = await initProvider({
+      issueClient,
+      linkStore,
+      commentLinkStore,
+    });
+
+    const pushResult = await provider.push(
+      createBinding(),
+      [
+        {
+          localTaskId: createTaskId("task-1"),
+          externalId: "https://code.example.com/acme/roadmap#7",
+          title: "Task one",
+          description: "",
+          status: "active",
+          priority: "medium",
+          labels: [],
+          assignees: [],
+          updatedAt: "2026-03-12T03:00:00.000Z",
+          comments: [
+            {
+              localNoteId: createNoteId("note-real"),
+              body: "_Synced from Forgejo comment by @alice on 2026-03-12T00:00:00.000Z_\n\nImported body",
+              createdAt: "2026-03-12T00:00:00.000Z",
+            },
+          ],
+        },
+      ],
+      project
+    );
+
+    expect(pushResult.commentLinks).toEqual([
+      expect.objectContaining({
+        localNoteId: createNoteId("note-real"),
+        externalCommentId: "21",
+        externalTaskId: createTaskId("task-1"),
+      }),
+    ]);
+    expect(
+      commentLinkStore.getByNoteId(createBinding().id, createNoteId("note-real"))
+    ).toMatchObject({
+      taskId: createTaskId("task-1"),
+      forgejoCommentId: 21,
+      lastMirroredBody: "Imported body",
+    });
+    expect(
+      commentLinkStore.getByNoteId(createBinding().id, createNoteId("external:21"))
+    ).toBeNull();
+  });
+
   it("keeps transient comment pull timeouts retryable", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [

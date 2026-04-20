@@ -3,6 +3,7 @@ import {
   createNoteId,
   createProjectId,
   createTaskId,
+  type ExportedTaskInput,
   type IntegrationBinding,
   type TaskPushPayload,
 } from "@todu/core";
@@ -377,6 +378,19 @@ describe("forgejo comments", () => {
       21, 22, 23,
     ]);
     expect(result.commentLinks).toHaveLength(2);
+    expect(result.commentLinks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          localNoteId: createNoteId("note-existing"),
+          externalTaskId: createTaskId("task-1"),
+          externalCommentId: "21",
+        }),
+        expect.objectContaining({
+          localNoteId: createNoteId("note-new"),
+          externalTaskId: createTaskId("task-1"),
+        }),
+      ])
+    );
   });
 
   it("pushes edits made to imported forgejo notes back to forgejo when the local note changed", async () => {
@@ -541,6 +555,160 @@ describe("forgejo comments", () => {
     ]);
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-stale"))).toBeNull();
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-existing"))).not.toBeNull();
+  });
+
+  it("reconciles note-tag comment linkage conflicts to the canonical forgejo comment id during push", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const itemLinkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+        title: "Issue",
+        state: "open",
+        labels: [],
+        assigneeActorIds: [],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-1"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+      })
+    );
+    commentLinkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-1"),
+      noteId: createNoteId("note-real"),
+      issueNumber: 7,
+      forgejoCommentId: 99,
+      lastMirroredAt: "2026-03-12T05:00:00.000Z",
+      lastMirroredBody: "Remote changed body",
+    });
+
+    const result = await pushComments({
+      binding,
+      issueClient,
+      target,
+      tasks: [
+        createTask([
+          {
+            id: createNoteId("note-real"),
+            content: "Remote changed body",
+            author: "bob",
+            tags: ["sync:externalId:21"],
+            createdAt: "2026-03-12T00:00:00.000Z",
+          },
+        ]),
+      ],
+      itemLinkStore,
+      commentLinkStore,
+    });
+
+    expect(result.commentLinks).toEqual([
+      expect.objectContaining({
+        localNoteId: createNoteId("note-real"),
+        externalTaskId: createTaskId("task-1"),
+        externalCommentId: "21",
+      }),
+    ]);
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-real"))).toMatchObject({
+      forgejoCommentId: 21,
+      lastMirroredBody: "Remote changed body",
+    });
+  });
+
+  it("reconciles legacy imported comment links to real local note ids during push", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const itemLinkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+        title: "Issue",
+        state: "open",
+        labels: [],
+        assigneeActorIds: [],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-1"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+      })
+    );
+    commentLinkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-legacy"),
+      noteId: createNoteId("external:21"),
+      issueNumber: 7,
+      forgejoCommentId: 21,
+      lastMirroredAt: "2026-03-12T05:00:00.000Z",
+      lastMirroredBody: "Remote changed body",
+    });
+
+    const task: ExportedTaskInput = {
+      localTaskId: createTaskId("task-1"),
+      externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+      title: "Sync comments",
+      description: "Test task",
+      status: "active",
+      priority: "medium",
+      labels: [],
+      assignees: [],
+      updatedAt: "2026-03-12T04:00:00.000Z",
+      comments: [
+        {
+          localNoteId: createNoteId("note-real"),
+          body: formatAttributedBody(
+            formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
+            "Remote changed body"
+          ),
+          createdAt: "2026-03-12T00:00:00.000Z",
+        },
+      ],
+    };
+
+    const result = await pushComments({
+      binding,
+      issueClient,
+      target,
+      tasks: [task],
+      itemLinkStore,
+      commentLinkStore,
+    });
+
+    expect(result.updatedComments).toHaveLength(0);
+    expect(result.createdComments).toHaveLength(0);
+    expect(result.commentLinks).toEqual([
+      expect.objectContaining({ localNoteId: createNoteId("note-real"), externalCommentId: "21" }),
+    ]);
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-real"))).toMatchObject({
+      taskId: createTaskId("task-1"),
+      forgejoCommentId: 21,
+      lastMirroredBody: "Remote changed body",
+    });
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("external:21"))).toBeNull();
   });
 
   it("skips unchanged linked notes and ignores unlinked imported notes", async () => {

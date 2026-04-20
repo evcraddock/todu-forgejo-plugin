@@ -81,6 +81,15 @@ function hasImportedForgejoSyncTag(note: Pick<Note, "tags">): boolean {
   return note.tags.some((tag) => tag.startsWith(SYNC_EXTERNAL_ID_TAG_PREFIX));
 }
 
+function isLegacyImportedCommentLinkNoteId(noteId: NoteId): boolean {
+  return String(noteId).startsWith(IMPORTED_COMMENT_LINK_PREFIX);
+}
+
+function getImportedForgejoSyncExternalId(note: Pick<Note, "tags">): string | null {
+  const syncTag = note.tags.find((tag) => tag.startsWith(SYNC_EXTERNAL_ID_TAG_PREFIX));
+  return syncTag ? syncTag.slice(SYNC_EXTERNAL_ID_TAG_PREFIX.length) : null;
+}
+
 export interface PullCommentsResult {
   comments: ImportedCommentInput[];
   createdLinks: ForgejoCommentLink[];
@@ -220,13 +229,14 @@ export async function pushComments(input: {
       continue;
     }
 
-    const currentNoteIds = new Set(
-      (task.comments as ForgejoPushComment[]).map((comment) => String(toPushNote(comment).id))
-    );
+    const notes = (task.comments as ForgejoPushComment[]).map((comment) => toPushNote(comment));
+    reconcileLegacyCommentLinks(input.binding.id, itemLink, notes, input.commentLinkStore);
 
-    for (const existingCommentLink of input.commentLinkStore.listByTask(
+    const currentNoteIds = new Set(notes.map((note) => String(note.id)));
+
+    for (const existingCommentLink of input.commentLinkStore.listByIssue(
       input.binding.id,
-      itemLink.taskId
+      itemLink.issueNumber
     )) {
       if (currentNoteIds.has(String(existingCommentLink.noteId))) {
         continue;
@@ -239,8 +249,7 @@ export async function pushComments(input: {
       });
     }
 
-    for (const comment of task.comments as ForgejoPushComment[]) {
-      const note = toPushNote(comment);
+    for (const note of notes) {
       const existingLink = input.commentLinkStore.getByNoteId(input.binding.id, note.id);
 
       if (
@@ -258,16 +267,11 @@ export async function pushComments(input: {
           updatedComments
         );
         commentLinks.push(
-          createPushCommentLink(
-            note.id,
-            itemLink.externalId,
-            existingLink.forgejoCommentId,
-            updated
-          )
+          createPushCommentLink(note.id, itemLink.taskId, existingLink.forgejoCommentId, updated)
         );
       } else {
         const created = await createForgejoCommentFromNote(input, note, itemLink, createdComments);
-        commentLinks.push(createPushCommentLink(note.id, itemLink.externalId, created.id, created));
+        commentLinks.push(createPushCommentLink(note.id, itemLink.taskId, created.id, created));
       }
     }
   }
@@ -299,6 +303,78 @@ function toPushNote(
     author: comment.author,
     createdAt: comment.createdAt,
   };
+}
+
+function reconcileLegacyCommentLinks(
+  bindingId: IntegrationBinding["id"],
+  itemLink: ForgejoItemLink,
+  notes: Array<Pick<Note, "id" | "content" | "tags">>,
+  commentLinkStore: ForgejoCommentLinkStore
+): void {
+  for (const existingLink of commentLinkStore.listByIssue(bindingId, itemLink.issueNumber)) {
+    const noteWithMatchingSyncTag = notes.find(
+      (note) => getImportedForgejoSyncExternalId(note) === String(existingLink.forgejoCommentId)
+    );
+    const noteWithSameId = notes.find((note) => note.id === existingLink.noteId);
+    const taggedForgejoCommentId = noteWithSameId
+      ? getImportedForgejoSyncExternalId(noteWithSameId)
+      : null;
+    const resolvedNoteId = isLegacyImportedCommentLinkNoteId(existingLink.noteId)
+      ? resolveLegacyCommentLinkNoteId(existingLink, notes)
+      : existingLink.noteId;
+    const resolvedForgejoCommentId = taggedForgejoCommentId
+      ? Number(taggedForgejoCommentId)
+      : existingLink.forgejoCommentId;
+
+    if (resolvedNoteId === null) {
+      continue;
+    }
+
+    const nextNoteId = noteWithMatchingSyncTag?.id ?? resolvedNoteId;
+
+    if (
+      existingLink.taskId === itemLink.taskId &&
+      existingLink.noteId === nextNoteId &&
+      existingLink.forgejoCommentId === resolvedForgejoCommentId
+    ) {
+      continue;
+    }
+
+    commentLinkStore.save({
+      ...existingLink,
+      taskId: itemLink.taskId,
+      noteId: nextNoteId,
+      forgejoCommentId: resolvedForgejoCommentId,
+    });
+  }
+}
+
+function resolveLegacyCommentLinkNoteId(
+  existingLink: ForgejoCommentLink,
+  notes: Array<Pick<Note, "id" | "content" | "tags">>
+): NoteId | null {
+  const matchingNotes = notes.filter((note) => {
+    const importedExternalId = getImportedForgejoSyncExternalId(note);
+    if (importedExternalId === String(existingLink.forgejoCommentId)) {
+      return true;
+    }
+
+    if (!hasForgejoAttribution(note.content)) {
+      return false;
+    }
+
+    if (existingLink.lastMirroredBody === undefined) {
+      return false;
+    }
+
+    return stripAttribution(note.content) === existingLink.lastMirroredBody;
+  });
+
+  if (matchingNotes.length !== 1) {
+    return null;
+  }
+
+  return matchingNotes[0].id;
 }
 
 async function updateForgejoCommentIfNeeded(
@@ -400,14 +476,14 @@ async function createForgejoCommentFromNote(
 
 function createPushCommentLink(
   noteId: NoteId,
-  externalTaskId: string,
+  taskId: ForgejoItemLink["taskId"],
   forgejoCommentId: number,
   comment: ForgejoComment | null
 ): SyncProviderPushCommentLink {
   return {
     localNoteId: noteId,
     externalCommentId: String(forgejoCommentId),
-    externalTaskId,
+    externalTaskId: String(taskId),
     sourceUrl: comment?.sourceUrl,
     createdAt: comment?.createdAt,
     updatedAt: comment?.updatedAt,
