@@ -3,8 +3,8 @@ import {
   createNoteId,
   createProjectId,
   createTaskId,
+  type ExportedTaskInput,
   type IntegrationBinding,
-  type TaskPushPayload,
 } from "@todu/core";
 
 import { createInMemoryForgejoCommentLinkStore } from "@/forgejo-comment-links";
@@ -47,19 +47,16 @@ const target = {
   repo: "roadmap",
 };
 
-function createPushTask(overrides: Partial<TaskPushPayload> = {}): TaskPushPayload {
+function createPushTask(overrides: Partial<ExportedTaskInput> = {}): ExportedTaskInput {
   return {
-    id: createTaskId("task-1"),
+    localTaskId: createTaskId("task-1"),
     title: "Test task",
     description: "",
     status: "active",
     priority: "medium",
-    projectId: createBinding().projectId,
     labels: [],
-    assigneeActorIds: overrides.assigneeActorIds ?? [],
     assignees: [],
     comments: [],
-    createdAt: "2026-03-12T00:00:00.000Z",
     updatedAt: "2026-03-12T00:00:00.000Z",
     ...overrides,
   };
@@ -305,7 +302,7 @@ describe("provider error classification coverage", () => {
       createBinding(),
       [
         createPushTask({
-          id: createTaskId("task-1"),
+          localTaskId: createTaskId("task-1"),
           externalId: "https://code.example.com/acme/roadmap#7",
           comments: [],
         }),
@@ -524,11 +521,9 @@ describe("provider push failure handling", () => {
           updatedAt: "2026-03-12T02:00:00.000Z",
           comments: [
             {
-              id: createNoteId("note-1"),
-              content: "Updated local note",
-              author: "alice",
+              localNoteId: createNoteId("note-1"),
+              body: "Updated local note",
               createdAt: "2026-03-12T02:00:00.000Z",
-              tags: [],
             },
           ],
         }),

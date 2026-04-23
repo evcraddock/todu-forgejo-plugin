@@ -8,17 +8,15 @@ import {
 describe("forgejo fields", () => {
   it("maps task fields into forgejo issue payloads", () => {
     const payload = createForgejoIssueCreateFromTask({
-      id: "task-1" as never,
+      localTaskId: "task-1" as never,
       title: "Ship feature",
       description: "Markdown body",
       status: "inprogress",
       priority: "high",
-      projectId: "project-1" as never,
       labels: ["bug", "priority:low"],
-      assigneeActorIds: [],
       assignees: [],
-      createdAt: "2026-03-12T00:00:00.000Z",
       updatedAt: "2026-03-12T00:00:00.000Z",
+      comments: [],
     });
 
     expect(payload).toEqual({

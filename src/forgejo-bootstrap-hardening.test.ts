@@ -2,8 +2,8 @@ import {
   createIntegrationBindingId,
   createProjectId,
   createTaskId,
+  type ExportedTaskInput,
   type IntegrationBinding,
-  type TaskPushPayload,
 } from "@todu/core";
 
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
@@ -29,19 +29,16 @@ const target = {
   repo: "roadmap",
 };
 
-function createPushTask(overrides: Partial<TaskPushPayload> = {}): TaskPushPayload {
+function createPushTask(overrides: Partial<ExportedTaskInput> = {}): ExportedTaskInput {
   return {
-    id: createTaskId("task-1"),
+    localTaskId: createTaskId("task-1"),
     title: "Test task",
     description: "",
     status: "active",
     priority: "medium",
-    projectId: binding.projectId,
     labels: [],
-    assigneeActorIds: overrides.assigneeActorIds ?? [],
     assignees: [],
     comments: [],
-    createdAt: "2026-03-12T00:00:00.000Z",
     updatedAt: "2026-03-12T00:00:00.000Z",
     ...overrides,
   };
@@ -344,8 +341,8 @@ describe("bootstrap status transitions", () => {
       binding,
       ...target,
       tasks: [
-        createPushTask({ id: createTaskId("done-task"), status: "done" }),
-        createPushTask({ id: createTaskId("canceled-task"), status: "canceled" }),
+        createPushTask({ localTaskId: createTaskId("done-task"), status: "done" }),
+        createPushTask({ localTaskId: createTaskId("canceled-task"), status: "canceled" }),
       ],
       issueClient,
       linkStore,
@@ -415,7 +412,7 @@ describe("bootstrap status transitions", () => {
       ...target,
       tasks: [
         createPushTask({
-          id: createTaskId("task-equal"),
+          localTaskId: createTaskId("task-equal"),
           title: "Changed title but equal timestamp",
           externalId: "https://code.example.com/acme/roadmap#1",
           updatedAt: "2026-03-12T01:00:00.000Z",

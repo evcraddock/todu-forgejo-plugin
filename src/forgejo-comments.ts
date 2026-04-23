@@ -3,12 +3,8 @@ import type {
   ExportedTaskInput,
   ImportedCommentInput,
   IntegrationBinding,
-  Note,
   NoteId,
   SyncProviderPushCommentLink,
-  TaskPriority,
-  TaskPushPayload,
-  TaskStatus,
 } from "@todu/core";
 
 import {
@@ -27,17 +23,14 @@ const IMPORTED_COMMENT_LINK_PREFIX = "external:";
 const SYNC_EXTERNAL_ID_TAG_PREFIX = "sync:externalId:";
 const TODU_COMMENT_AUTHOR = "todu";
 
-interface ForgejoLegacyPushTask {
-  id: string;
-  comments: Note[];
-  title: string;
-  status: TaskStatus;
-  priority: TaskPriority;
-  labels: string[];
+interface ForgejoPushNote {
+  id: ExportedCommentInput["localNoteId"];
+  content: ExportedCommentInput["body"];
+  tags: string[];
+  author: string;
+  createdAt: ExportedCommentInput["createdAt"];
+  updatedAt?: ExportedCommentInput["updatedAt"];
 }
-
-type ForgejoPushTask = ExportedTaskInput | TaskPushPayload | ForgejoLegacyPushTask;
-type ForgejoPushComment = ExportedCommentInput | Note;
 
 export function formatForgejoAttribution(author: string, timestamp: string): string {
   return `_Synced from Forgejo comment by @${author} on ${timestamp}_`;
@@ -77,7 +70,7 @@ export function hasForgejoAttribution(body: string): boolean {
   );
 }
 
-function hasImportedForgejoSyncTag(note: Pick<Note, "tags">): boolean {
+function hasImportedForgejoSyncTag(note: Pick<ForgejoPushNote, "tags">): boolean {
   return note.tags.some((tag) => tag.startsWith(SYNC_EXTERNAL_ID_TAG_PREFIX));
 }
 
@@ -85,7 +78,7 @@ function isLegacyImportedCommentLinkNoteId(noteId: NoteId): boolean {
   return String(noteId).startsWith(IMPORTED_COMMENT_LINK_PREFIX);
 }
 
-function getImportedForgejoSyncExternalId(note: Pick<Note, "tags">): string | null {
+function getImportedForgejoSyncExternalId(note: Pick<ForgejoPushNote, "tags">): string | null {
   const syncTag = note.tags.find((tag) => tag.startsWith(SYNC_EXTERNAL_ID_TAG_PREFIX));
   return syncTag ? syncTag.slice(SYNC_EXTERNAL_ID_TAG_PREFIX.length) : null;
 }
@@ -213,9 +206,12 @@ export async function pushComments(input: {
     owner: string;
     repo: string;
   };
-  tasks: ForgejoPushTask[];
+  tasks: ExportedTaskInput[];
   itemLinkStore: ForgejoItemLinkStore;
   commentLinkStore: ForgejoCommentLinkStore;
+  loadTaskNotes?: (
+    taskId: ExportedTaskInput["localTaskId"]
+  ) => Promise<Array<{ id: string; tags: string[] }>>;
   onStaleLink?: (context: PushCommentsStaleLinkContext) => void | Promise<void>;
 }): Promise<PushCommentsResult> {
   const commentLinks: SyncProviderPushCommentLink[] = [];
@@ -223,16 +219,19 @@ export async function pushComments(input: {
   const updatedComments: ForgejoComment[] = [];
 
   for (const task of input.tasks) {
-    const localTaskId = getLocalTaskId(task);
-    const itemLink = input.itemLinkStore.getByTaskId(input.binding.id, localTaskId as never);
+    const itemLink = input.itemLinkStore.getByTaskId(input.binding.id, task.localTaskId as never);
     if (!itemLink) {
       continue;
     }
 
-    const notes = (task.comments as ForgejoPushComment[]).map((comment) => toPushNote(comment));
+    const taskNotes = input.loadTaskNotes ? await input.loadTaskNotes(task.localTaskId) : [];
+    const noteTagsById = new Map(taskNotes.map((note) => [String(note.id), note.tags]));
+    const notes = task.comments.map((comment) =>
+      toPushNote(comment, noteTagsById.get(String(comment.localNoteId)) ?? [])
+    );
     reconcileLegacyCommentLinks(input.binding.id, itemLink, notes, input.commentLinkStore);
 
-    const currentNoteIds = new Set(notes.map((note) => String(note.id)));
+    const currentNoteIds = new Set(task.comments.map((comment) => String(comment.localNoteId)));
 
     for (const existingCommentLink of input.commentLinkStore.listByIssue(
       input.binding.id,
@@ -250,7 +249,13 @@ export async function pushComments(input: {
     }
 
     for (const note of notes) {
-      const existingLink = input.commentLinkStore.getByNoteId(input.binding.id, note.id);
+      const existingLink = resolveCommentLinkForPush({
+        binding: input.binding,
+        taskId: task.localTaskId,
+        itemLink,
+        note,
+        commentLinkStore: input.commentLinkStore,
+      });
 
       if (
         !existingLink &&
@@ -279,86 +284,101 @@ export async function pushComments(input: {
   return { commentLinks, createdComments, updatedComments };
 }
 
-function getLocalTaskId(task: ForgejoPushTask): string {
-  return "localTaskId" in task ? String(task.localTaskId) : String(task.id);
+function toPushNote(comment: ExportedCommentInput, tags: string[]): ForgejoPushNote {
+  return {
+    id: comment.localNoteId,
+    content: comment.body,
+    tags,
+    author: TODU_COMMENT_AUTHOR,
+    createdAt: comment.createdAt,
+    updatedAt: comment.updatedAt,
+  };
 }
 
-function toPushNote(
-  comment: ForgejoPushComment
-): Pick<Note, "id" | "content" | "tags" | "author" | "createdAt"> {
-  if ("localNoteId" in comment) {
-    return {
-      id: comment.localNoteId,
-      content: comment.body,
-      tags: [],
-      author: TODU_COMMENT_AUTHOR,
-      createdAt: comment.createdAt,
-    };
+function resolveCommentLinkForPush(input: {
+  binding: IntegrationBinding;
+  taskId: ExportedTaskInput["localTaskId"];
+  itemLink: ForgejoItemLink;
+  note: ForgejoPushNote;
+  commentLinkStore: ForgejoCommentLinkStore;
+}): ForgejoCommentLink | null {
+  const existingLink = input.commentLinkStore.getByNoteId(input.binding.id, input.note.id);
+  const syncExternalCommentId = getImportedForgejoSyncExternalId(input.note);
+
+  if (syncExternalCommentId === null) {
+    return existingLink;
   }
 
-  return {
-    id: comment.id,
-    content: comment.content,
-    tags: comment.tags,
-    author: comment.author,
-    createdAt: comment.createdAt,
+  const forgejoCommentId = Number(syncExternalCommentId);
+  const canonicalLink = input.commentLinkStore.getByForgejoCommentId(
+    input.binding.id,
+    forgejoCommentId
+  );
+  const reconciledLink: ForgejoCommentLink = {
+    bindingId: input.binding.id,
+    taskId: input.taskId,
+    noteId: input.note.id,
+    issueNumber: input.itemLink.issueNumber,
+    forgejoCommentId,
+    lastMirroredAt:
+      canonicalLink?.lastMirroredAt ??
+      existingLink?.lastMirroredAt ??
+      input.note.updatedAt ??
+      input.note.createdAt,
+    lastMirroredBody:
+      canonicalLink?.lastMirroredBody ??
+      existingLink?.lastMirroredBody ??
+      stripAttribution(input.note.content),
   };
+
+  if (existingLink && existingLink.forgejoCommentId !== forgejoCommentId) {
+    input.commentLinkStore.remove(input.binding.id, input.note.id);
+  }
+
+  if (
+    canonicalLink?.noteId !== input.note.id ||
+    canonicalLink?.taskId !== input.taskId ||
+    canonicalLink?.issueNumber !== input.itemLink.issueNumber ||
+    existingLink?.forgejoCommentId !== forgejoCommentId
+  ) {
+    input.commentLinkStore.save(reconciledLink);
+  }
+
+  return canonicalLink?.noteId === input.note.id ? canonicalLink : reconciledLink;
 }
 
 function reconcileLegacyCommentLinks(
   bindingId: IntegrationBinding["id"],
   itemLink: ForgejoItemLink,
-  notes: Array<Pick<Note, "id" | "content" | "tags">>,
+  notes: ForgejoPushNote[],
   commentLinkStore: ForgejoCommentLinkStore
 ): void {
   for (const existingLink of commentLinkStore.listByIssue(bindingId, itemLink.issueNumber)) {
-    const noteWithMatchingSyncTag = notes.find(
-      (note) => getImportedForgejoSyncExternalId(note) === String(existingLink.forgejoCommentId)
-    );
-    const noteWithSameId = notes.find((note) => note.id === existingLink.noteId);
-    const taggedForgejoCommentId = noteWithSameId
-      ? getImportedForgejoSyncExternalId(noteWithSameId)
-      : null;
     const resolvedNoteId = isLegacyImportedCommentLinkNoteId(existingLink.noteId)
       ? resolveLegacyCommentLinkNoteId(existingLink, notes)
       : existingLink.noteId;
-    const resolvedForgejoCommentId = taggedForgejoCommentId
-      ? Number(taggedForgejoCommentId)
-      : existingLink.forgejoCommentId;
 
     if (resolvedNoteId === null) {
       continue;
     }
 
-    const nextNoteId = noteWithMatchingSyncTag?.id ?? resolvedNoteId;
-
-    if (
-      existingLink.taskId === itemLink.taskId &&
-      existingLink.noteId === nextNoteId &&
-      existingLink.forgejoCommentId === resolvedForgejoCommentId
-    ) {
+    if (existingLink.taskId === itemLink.taskId && existingLink.noteId === resolvedNoteId) {
       continue;
     }
 
     commentLinkStore.save({
       ...existingLink,
       taskId: itemLink.taskId,
-      noteId: nextNoteId,
-      forgejoCommentId: resolvedForgejoCommentId,
+      noteId: resolvedNoteId,
     });
   }
 }
 
 function resolveLegacyCommentLinkNoteId(
   existingLink: ForgejoCommentLink,
-  notes: Array<Pick<Note, "id" | "content" | "tags">>
+  notes: ForgejoPushNote[]
 ): NoteId | null {
   const matchingNotes = notes.filter((note) => {
-    const importedExternalId = getImportedForgejoSyncExternalId(note);
-    if (importedExternalId === String(existingLink.forgejoCommentId)) {
-      return true;
-    }
-
     if (!hasForgejoAttribution(note.content)) {
       return false;
     }
@@ -388,13 +408,13 @@ async function updateForgejoCommentIfNeeded(
     };
     commentLinkStore: ForgejoCommentLinkStore;
   },
-  note: Pick<Note, "id" | "content" | "author" | "createdAt">,
+  note: ForgejoPushNote,
   existingLink: ForgejoCommentLink,
   updatedComments: ForgejoComment[]
 ): Promise<ForgejoComment | null> {
   const localBody = stripAttribution(note.content);
   const mirroredBody = existingLink.lastMirroredBody ?? localBody;
-  const noteUpdatedAt = Date.parse(note.createdAt);
+  const noteUpdatedAt = Date.parse(note.updatedAt ?? note.createdAt);
   const lastMirroredAt = Date.parse(existingLink.lastMirroredAt);
 
   if (
@@ -443,7 +463,7 @@ async function createForgejoCommentFromNote(
     };
     commentLinkStore: ForgejoCommentLinkStore;
   },
-  note: Pick<Note, "id" | "content" | "author" | "createdAt">,
+  note: ForgejoPushNote,
   itemLink: ForgejoItemLink,
   createdComments: ForgejoComment[]
 ): Promise<ForgejoComment> {

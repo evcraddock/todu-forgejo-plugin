@@ -1,10 +1,4 @@
-import type {
-  ExportedTaskInput,
-  ImportedTaskInput,
-  Task,
-  TaskStatus,
-  TaskWithDetail,
-} from "@todu/core";
+import type { ExportedTaskInput, ImportedTaskInput, Task, TaskStatus } from "@todu/core";
 
 import {
   createForgejoActorRef,
@@ -39,15 +33,6 @@ export interface ForgejoFieldMapping {
   labels: string[];
 }
 
-export interface ForgejoLegacyPushTaskInput {
-  title: string;
-  description?: string;
-  status: TaskStatus;
-  priority: Task["priority"];
-  labels: string[];
-  assignees?: string[];
-}
-
 export function mapForgejoIssueToImportedTask(issue: ForgejoIssue): ImportedTaskInput {
   const normalizedStatus = normalizeForgejoIssueStatus(issue.state, issue.labels);
   const normalizedPriority = normalizeForgejoIssuePriority(issue.labels);
@@ -70,9 +55,7 @@ export function mapForgejoIssueToImportedTask(issue: ForgejoIssue): ImportedTask
   };
 }
 
-export function createForgejoIssueCreateFromTask(
-  task: TaskWithDetail | ExportedTaskInput | ForgejoLegacyPushTaskInput
-): CreateForgejoIssueInput {
+export function createForgejoIssueCreateFromTask(task: ExportedTaskInput): CreateForgejoIssueInput {
   const normalizedStatus = createForgejoStatusFromTask(task.status);
   const normalizedPriority = createForgejoPriorityFromTask(task.priority);
 
@@ -89,9 +72,7 @@ export function createForgejoIssueCreateFromTask(
   };
 }
 
-export function createForgejoIssueUpdateFromTask(
-  task: TaskWithDetail | ExportedTaskInput | ForgejoLegacyPushTaskInput
-): UpdateForgejoIssueInput {
+export function createForgejoIssueUpdateFromTask(task: ExportedTaskInput): UpdateForgejoIssueInput {
   return createForgejoIssueCreateFromTask(task);
 }
 
@@ -211,25 +192,14 @@ function parseTaskPriorityFromLabel(label: string): Task["priority"] {
   return label.slice(PRIORITY_LABEL_PREFIX.length) as Task["priority"];
 }
 
-function getOutboundForgejoAssignees(
-  task: TaskWithDetail | ExportedTaskInput | ForgejoLegacyPushTaskInput
-): string[] | undefined {
-  if ("assignees" in task && Array.isArray(task.assignees)) {
-    const assignees = task.assignees.flatMap((assignee) => {
-      if (typeof assignee === "string") {
-        const normalized = assignee.trim();
-        return normalized ? [normalized] : [];
-      }
+function getOutboundForgejoAssignees(task: ExportedTaskInput): string[] | undefined {
+  const assignees = task.assignees.flatMap((assignee) => {
+    const normalized =
+      assignee.externalLogin?.trim() ||
+      assignee.displayName?.trim() ||
+      assignee.externalAccountId?.trim();
+    return normalized ? [normalized] : [];
+  });
 
-      const normalized =
-        assignee.externalLogin?.trim() ||
-        assignee.displayName?.trim() ||
-        assignee.externalAccountId?.trim();
-      return normalized ? [normalized] : [];
-    });
-
-    return assignees.length > 0 ? assignees : undefined;
-  }
-
-  return undefined;
+  return assignees.length > 0 ? assignees : undefined;
 }
