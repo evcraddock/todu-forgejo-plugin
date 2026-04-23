@@ -3,9 +3,9 @@ import {
   createNoteId,
   createProjectId,
   createTaskId,
+  type ExportedCommentInput,
   type ExportedTaskInput,
   type IntegrationBinding,
-  type TaskPushPayload,
 } from "@todu/core";
 
 import {
@@ -44,21 +44,18 @@ const target = {
 };
 
 function createTask(
-  comments: TaskPushPayload["comments"],
+  comments: ExportedCommentInput[],
   updatedAt = "2026-03-12T00:00:00.000Z"
-): TaskPushPayload {
+): ExportedTaskInput {
   return {
-    id: createTaskId("task-1"),
+    localTaskId: createTaskId("task-1"),
     title: "Sync comments",
     description: "Test task",
     status: "active",
     priority: "medium",
-    projectId: binding.projectId,
     labels: [],
-    assigneeActorIds: [],
     assignees: [],
     comments,
-    createdAt: "2026-03-12T00:00:00.000Z",
     updatedAt,
   };
 }
@@ -324,17 +321,13 @@ describe("forgejo comments", () => {
     const task = createTask(
       [
         {
-          id: createNoteId("note-existing"),
-          content: "Updated local body",
-          author: "bob",
-          tags: [],
+          localNoteId: createNoteId("note-existing"),
+          body: "Updated local body",
           createdAt: "2026-03-12T03:00:00.000Z",
         },
         {
-          id: createNoteId("note-new"),
-          content: "Brand new local note",
-          author: "bob",
-          tags: [],
+          localNoteId: createNoteId("note-new"),
+          body: "Brand new local note",
           createdAt: "2026-03-12T04:00:00.000Z",
         },
       ],
@@ -361,11 +354,11 @@ describe("forgejo comments", () => {
     expect(result.updatedComments).toHaveLength(1);
     expect(result.updatedComments[0].id).toBe(21);
     expect(result.updatedComments[0].body).toBe(
-      "_Synced from todu comment by @bob on 2026-03-12T03:00:00.000Z_\n\nUpdated local body"
+      "_Synced from todu comment by @todu on 2026-03-12T03:00:00.000Z_\n\nUpdated local body"
     );
     expect(result.createdComments).toHaveLength(1);
     expect(result.createdComments[0].body).toBe(
-      "_Synced from todu comment by @bob on 2026-03-12T04:00:00.000Z_\n\nBrand new local note"
+      "_Synced from todu comment by @todu on 2026-03-12T04:00:00.000Z_\n\nBrand new local note"
     );
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-new"))).toMatchObject({
       lastMirroredBody: "Brand new local note",
@@ -445,13 +438,11 @@ describe("forgejo comments", () => {
     const task = createTask(
       [
         {
-          id: createNoteId("external:21"),
-          content: formatAttributedBody(
+          localNoteId: createNoteId("external:21"),
+          body: formatAttributedBody(
             formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
             "Edited imported body"
           ),
-          author: "alice",
-          tags: [],
           createdAt: "2026-03-12T00:00:00.000Z",
         },
       ],
@@ -469,7 +460,7 @@ describe("forgejo comments", () => {
 
     expect(result.updatedComments).toHaveLength(1);
     expect(result.updatedComments[0].body).toBe(
-      "_Synced from todu comment by @alice on 2026-03-12T00:00:00.000Z_\n\nEdited imported body"
+      "_Synced from todu comment by @todu on 2026-03-12T00:00:00.000Z_\n\nEdited imported body"
     );
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("external:21"))).toMatchObject({
       lastMirroredBody: "Edited imported body",
@@ -532,10 +523,8 @@ describe("forgejo comments", () => {
       tasks: [
         createTask([
           {
-            id: createNoteId("note-existing"),
-            content: "Existing body",
-            author: "bob",
-            tags: [],
+            localNoteId: createNoteId("note-existing"),
+            body: "Existing body",
             createdAt: "2026-03-12T01:00:00.000Z",
           },
         ]),
@@ -603,16 +592,17 @@ describe("forgejo comments", () => {
       tasks: [
         createTask([
           {
-            id: createNoteId("note-real"),
-            content: "Remote changed body",
-            author: "bob",
-            tags: ["sync:externalId:21"],
+            localNoteId: createNoteId("note-real"),
+            body: "Remote changed body",
             createdAt: "2026-03-12T00:00:00.000Z",
           },
         ]),
       ],
       itemLinkStore,
       commentLinkStore,
+      loadTaskNotes: async () => [
+        { id: String(createNoteId("note-real")), tags: ["sync:externalId:21"] },
+      ],
     });
 
     expect(result.commentLinks).toEqual([
@@ -763,23 +753,19 @@ describe("forgejo comments", () => {
     const task = createTask(
       [
         {
-          id: createNoteId("external:21"),
-          content: formatAttributedBody(
+          localNoteId: createNoteId("external:21"),
+          body: formatAttributedBody(
             formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
             "Remote changed body"
           ),
-          author: "alice",
-          tags: [],
           createdAt: "2026-03-12T00:00:00.000Z",
         },
         {
-          id: createNoteId("external:99"),
-          content: formatAttributedBody(
+          localNoteId: createNoteId("external:99"),
+          body: formatAttributedBody(
             formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
             "Unlinked imported body"
           ),
-          author: "alice",
-          tags: [],
           createdAt: "2026-03-12T00:00:00.000Z",
         },
       ],

@@ -1,12 +1,4 @@
-import type {
-  ExportedTaskInput,
-  ImportedTaskInput,
-  IntegrationBinding,
-  Note,
-  TaskPushPayload,
-  TaskStatus,
-  TaskPriority,
-} from "@todu/core";
+import type { ExportedTaskInput, ImportedTaskInput, IntegrationBinding } from "@todu/core";
 
 import {
   createForgejoIssueCreateFromTask,
@@ -23,24 +15,7 @@ import {
   type ForgejoItemLinkStore,
 } from "@/forgejo-links";
 
-interface ForgejoLegacyPushTask {
-  id: string;
-  title: string;
-  description?: string;
-  status: TaskStatus;
-  priority: TaskPriority;
-  labels: string[];
-  assignees?: string[];
-  comments: Note[];
-  externalId?: string;
-  sourceUrl?: string;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-type ForgejoPushTask = ExportedTaskInput | TaskPushPayload | ForgejoLegacyPushTask;
-
-const TASK_BOOTSTRAP_EXPORT_STATUSES = new Set<ForgejoPushTask["status"]>([
+const TASK_BOOTSTRAP_EXPORT_STATUSES = new Set<ExportedTaskInput["status"]>([
   "active",
   "inprogress",
   "waiting",
@@ -53,7 +28,7 @@ export interface ForgejoBootstrapImportResult {
 }
 
 export interface ForgejoBootstrapTaskUpdate {
-  taskId: string;
+  taskId: ExportedTaskInput["localTaskId"];
   externalId: string;
   sourceUrl?: string;
 }
@@ -142,7 +117,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
   apiBaseUrl: string;
   owner: string;
   repo: string;
-  tasks: ForgejoPushTask[];
+  tasks: ExportedTaskInput[];
   issueClient: ForgejoIssueClient;
   linkStore: ForgejoItemLinkStore;
   commentLinkStore?: ForgejoCommentLinkStore;
@@ -175,7 +150,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
     }
   };
 
-  const clearStaleTaskReferences = (taskId: string): void => {
+  const clearStaleTaskReferences = (taskId: ExportedTaskInput["localTaskId"]): void => {
     input.linkStore.remove(input.binding.id, taskId as ForgejoItemLink["taskId"]);
 
     if (!input.commentLinkStore) {
@@ -190,7 +165,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
     }
   };
 
-  const createIssueForTask = async (task: ForgejoPushTask): Promise<boolean> => {
+  const createIssueForTask = async (task: ExportedTaskInput): Promise<boolean> => {
     if (!TASK_BOOTSTRAP_EXPORT_STATUSES.has(task.status)) {
       return false;
     }
@@ -203,7 +178,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
 
     const createdLink = createLinkFromTask({
       binding: input.binding,
-      taskId: getLocalTaskId(task) as ForgejoItemLink["taskId"],
+      taskId: task.localTaskId as ForgejoItemLink["taskId"],
       baseUrl: input.baseUrl,
       owner: input.owner,
       repo: input.repo,
@@ -213,7 +188,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
     input.linkStore.save(createdLink);
     createdLinks.push(createdLink);
     taskUpdates.push({
-      taskId: getLocalTaskId(task),
+      taskId: task.localTaskId,
       externalId: createdLink.externalId,
       sourceUrl: createdIssue.sourceUrl,
     });
@@ -222,7 +197,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
   };
 
   for (const task of input.tasks) {
-    const localTaskId = getLocalTaskId(task);
+    const localTaskId = task.localTaskId;
     const existingLink = input.linkStore.getByTaskId(
       input.binding.id,
       localTaskId as ForgejoItemLink["taskId"]
@@ -332,7 +307,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
     await createIssueForTask(task);
   }
 
-  const currentTaskIds = new Set(input.tasks.map((task) => getLocalTaskId(task)));
+  const currentTaskIds = new Set(input.tasks.map((task) => String(task.localTaskId)));
   const orphanedLinks = input.linkStore
     .list(input.binding.id)
     .filter((link) => !currentTaskIds.has(String(link.taskId)));
@@ -378,10 +353,6 @@ export async function bootstrapTasksToForgejoIssues(input: {
   };
 }
 
-function getLocalTaskId(task: ForgejoPushTask): string {
-  return "localTaskId" in task ? String(task.localTaskId) : String(task.id);
-}
-
 function isForgejoIssueNotFoundError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /\b404\b/.test(message) || /issue not found/i.test(message);
@@ -402,7 +373,7 @@ function createForgejoIssueCloseFromDeletion(issue: ForgejoIssue): {
   };
 }
 
-function shouldPushTaskUpdate(task: ForgejoPushTask, issue: ForgejoIssue | null): boolean {
+function shouldPushTaskUpdate(task: ExportedTaskInput, issue: ForgejoIssue | null): boolean {
   if (!issue) {
     return true;
   }
@@ -415,15 +386,14 @@ function shouldPushTaskUpdate(task: ForgejoPushTask, issue: ForgejoIssue | null)
 }
 
 function shouldPushTaskUpdateFromMirroredAt(
-  task: ForgejoPushTask,
+  task: ExportedTaskInput,
   lastMirroredAt: string | undefined
 ): boolean {
   if (!lastMirroredAt) {
     return true;
   }
 
-  const taskUpdatedAt =
-    "updatedAt" in task && typeof task.updatedAt === "string" ? task.updatedAt : undefined;
+  const taskUpdatedAt = task.updatedAt;
   if (!taskUpdatedAt) {
     return true;
   }
@@ -431,7 +401,7 @@ function shouldPushTaskUpdateFromMirroredAt(
   return taskUpdatedAt > lastMirroredAt;
 }
 
-function issueMatchesTask(task: ForgejoPushTask, issue: ForgejoIssue): boolean {
+function issueMatchesTask(task: ExportedTaskInput, issue: ForgejoIssue): boolean {
   const expected = createForgejoIssueCreateFromTask(task);
 
   if (expected.title !== issue.title) {
@@ -477,7 +447,7 @@ function issueMatchesTask(task: ForgejoPushTask, issue: ForgejoIssue): boolean {
 }
 
 function getMatchingExternalId(
-  task: ForgejoPushTask,
+  task: ExportedTaskInput,
   baseUrl: string,
   owner: string,
   repo: string

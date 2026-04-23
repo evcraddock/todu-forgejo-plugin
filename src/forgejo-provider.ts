@@ -9,7 +9,6 @@ import {
   type SyncProviderPushResult,
   type SyncProviderRegistration,
   type SyncProviderV3,
-  type TaskPushPayload,
 } from "@todu/core";
 
 import {
@@ -94,7 +93,7 @@ export interface ForgejoProviderState {
 export interface ForgejoSyncProvider extends SyncProviderV3 {
   push(
     binding: IntegrationBinding,
-    tasks: ExportedTaskInput[] | TaskPushPayload[],
+    tasks: ExportedTaskInput[],
     project: Parameters<SyncProviderV3["push"]>[2]
   ): Promise<SyncProviderPushResult>;
   getState(): ForgejoProviderState;
@@ -109,6 +108,9 @@ export interface CreateForgejoSyncProviderOptions {
   logger?: ForgejoSyncLogger;
   retryConfig?: ForgejoRetryConfig;
   initialConfig?: SyncProviderConfig | null;
+  loadTaskNotes?: (
+    taskId: ExportedTaskInput["localTaskId"]
+  ) => Promise<Array<{ id: string; tags: string[] }>>;
 }
 
 export function createForgejoRepositoryTarget(
@@ -347,11 +349,7 @@ export function createForgejoSyncProvider(
         throw error;
       }
     },
-    async push(
-      binding,
-      tasks: ExportedTaskInput[] | TaskPushPayload[],
-      _project
-    ): Promise<SyncProviderPushResult> {
+    async push(binding, tasks: ExportedTaskInput[], _project): Promise<SyncProviderPushResult> {
       const parsedBinding = validateBinding(binding);
       const currentSettings = requireInitializedSettings();
       const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
@@ -393,7 +391,7 @@ export function createForgejoSyncProvider(
           apiBaseUrl: target.apiBaseUrl,
           owner: target.owner,
           repo: target.repo,
-          tasks: tasks as ExportedTaskInput[],
+          tasks,
           issueClient,
           linkStore,
           commentLinkStore,
@@ -435,9 +433,10 @@ export function createForgejoSyncProvider(
           binding,
           issueClient,
           target,
-          tasks: tasks as ExportedTaskInput[],
+          tasks,
           itemLinkStore: linkStore,
           commentLinkStore,
+          loadTaskNotes: options.loadTaskNotes,
           onStaleLink: ({ itemLink, commentLink }) => {
             logger.warn("removing stale comment link for missing local note", {
               ...logContext,

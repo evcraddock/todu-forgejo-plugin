@@ -2,8 +2,8 @@ import {
   createIntegrationBindingId,
   createProjectId,
   createTaskId,
+  type ExportedTaskInput,
   type IntegrationBinding,
-  type TaskPushPayload,
 } from "@todu/core";
 
 import { FORGEJO_PROVIDER_NAME, FORGEJO_REPOSITORY_TARGET_KIND } from "@/forgejo-binding";
@@ -38,6 +38,21 @@ const project = {
   createdAt: "2026-03-12T00:00:00.000Z",
   updatedAt: "2026-03-12T00:00:00.000Z",
 };
+
+function createExportedTask(overrides: Partial<ExportedTaskInput> = {}): ExportedTaskInput {
+  return {
+    localTaskId: createTaskId("task-1"),
+    title: "Test task",
+    description: "",
+    status: "active",
+    priority: "medium",
+    labels: [],
+    assignees: [],
+    updatedAt: "2026-03-12T00:00:00.000Z",
+    comments: [],
+    ...overrides,
+  };
+}
 
 describe("forgejo provider", () => {
   it("exports initialized settings after initialize and resets on shutdown", async () => {
@@ -413,21 +428,12 @@ describe("forgejo provider runtime integration", () => {
       },
     });
 
-    const tasks: TaskPushPayload[] = [
-      {
-        id: createTaskId("task-loop"),
+    const tasks: ExportedTaskInput[] = [
+      createExportedTask({
+        localTaskId: createTaskId("task-loop"),
         title: "Loop test",
-        description: "",
-        status: "active",
-        priority: "medium",
-        projectId: createBinding().projectId,
-        labels: [],
-        assigneeActorIds: [],
-        assignees: ["caradoc"],
-        comments: [],
-        createdAt: "2026-03-12T00:00:00.000Z",
-        updatedAt: "2026-03-12T00:00:00.000Z",
-      },
+        assignees: [{ externalLogin: "caradoc", displayName: "caradoc" }],
+      }),
     ];
 
     await provider.push(createBinding(), tasks, project);
@@ -523,20 +529,11 @@ describe("forgejo provider runtime integration", () => {
     await provider.push(
       createBinding(),
       [
-        {
-          id: createTaskId("task-7"),
+        createExportedTask({
+          localTaskId: createTaskId("task-7"),
           title: "Unchanged task",
-          description: "",
-          status: "active",
-          priority: "medium",
-          projectId: createBinding().projectId,
-          labels: [],
-          assigneeActorIds: [],
-          assignees: [],
-          comments: [],
-          createdAt: "2026-03-12T00:00:00.000Z",
           updatedAt: "2026-03-12T01:00:00.000Z",
-        },
+        }),
       ],
       project
     );
@@ -593,26 +590,17 @@ describe("forgejo provider runtime integration", () => {
       },
     });
 
-    const firstTask: TaskPushPayload = {
-      id: createTaskId("task-loop"),
+    const firstTask: ExportedTaskInput = createExportedTask({
+      localTaskId: createTaskId("task-loop"),
       title: "Loop test updated",
-      description: "",
-      status: "active",
-      priority: "medium",
-      projectId: createBinding().projectId,
-      labels: [],
-      assigneeActorIds: [],
-      assignees: [],
-      comments: [],
-      createdAt: "2026-03-12T00:00:00.000Z",
       updatedAt: "2026-03-12T01:00:00.000Z",
-    };
+    });
 
     await provider.push(createBinding(), [firstTask], project);
     expect(updateCallCount).toBe(1);
 
     const issueUpdatedAt = issueClient.snapshotIssues(target)[0].updatedAt!;
-    const secondTask: TaskPushPayload = {
+    const secondTask: ExportedTaskInput = {
       ...firstTask,
       updatedAt: issueUpdatedAt,
     };

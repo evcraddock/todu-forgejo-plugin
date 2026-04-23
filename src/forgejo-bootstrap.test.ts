@@ -2,8 +2,8 @@ import {
   createIntegrationBindingId,
   createProjectId,
   createTaskId,
+  type ExportedTaskInput,
   type IntegrationBinding,
-  type TaskPushPayload,
 } from "@todu/core";
 
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
@@ -29,6 +29,21 @@ const target = {
   owner: "erik",
   repo: "todu-forgejo-plugin-test",
 };
+
+function createExportedTask(overrides: Partial<ExportedTaskInput> = {}): ExportedTaskInput {
+  return {
+    localTaskId: createTaskId("task-1"),
+    title: "Test task",
+    description: "",
+    status: "active",
+    priority: "medium",
+    labels: [],
+    assignees: [],
+    updatedAt: "2026-03-12T00:00:00.000Z",
+    comments: [],
+    ...overrides,
+  };
+}
 
 describe("forgejo bootstrap", () => {
   it("imports open issues with normalized fields and creates durable links", async () => {
@@ -90,34 +105,21 @@ describe("forgejo bootstrap", () => {
   it("exports active tasks to forgejo with normalized fields, assignees, and creates missing labels", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();
-    const tasks: TaskPushPayload[] = [
-      {
-        id: createTaskId("task-1"),
+    const tasks: ExportedTaskInput[] = [
+      createExportedTask({
+        localTaskId: createTaskId("task-1"),
         title: "Create sync",
         description: "Bootstrap this issue",
         status: "active",
         priority: "high",
-        projectId: binding.projectId,
         labels: ["bug"],
-        assigneeActorIds: [],
-        assignees: ["caradoc"],
-        comments: [],
-        createdAt: "2026-03-12T00:00:00.000Z",
-        updatedAt: "2026-03-12T00:00:00.000Z",
-      },
-      {
-        id: createTaskId("task-2"),
+        assignees: [{ externalLogin: "caradoc", displayName: "caradoc" }],
+      }),
+      createExportedTask({
+        localTaskId: createTaskId("task-2"),
         title: "Ignore closed task",
         status: "done",
-        priority: "medium",
-        projectId: binding.projectId,
-        labels: [],
-        assigneeActorIds: [],
-        assignees: [],
-        comments: [],
-        createdAt: "2026-03-12T00:00:00.000Z",
-        updatedAt: "2026-03-12T00:00:00.000Z",
-      },
+      }),
     ];
 
     const result = await bootstrapTasksToForgejoIssues({
@@ -142,7 +144,7 @@ describe("forgejo bootstrap", () => {
     expect(result.createdLinks[0].lastMirroredAt).toBeDefined();
     expect(result.taskUpdates).toEqual([
       expect.objectContaining({
-        taskId: String(tasks[0].id),
+        taskId: String(tasks[0].localTaskId),
         externalId: expect.any(String),
         sourceUrl: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test/issues/1",
       }),
@@ -167,21 +169,14 @@ describe("forgejo bootstrap", () => {
       },
     ]);
 
-    const tasks: TaskPushPayload[] = [
-      {
-        id: createTaskId("task-1"),
+    const tasks: ExportedTaskInput[] = [
+      createExportedTask({
+        localTaskId: createTaskId("task-1"),
         title: "Reuse issue",
         externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
-        status: "active",
-        priority: "medium",
-        projectId: binding.projectId,
         labels: ["needs-review"],
-        assigneeActorIds: [],
-        assignees: [],
-        comments: [],
-        createdAt: "2026-03-12T00:00:00.000Z",
         updatedAt: "2026-03-12T01:00:00.000Z",
-      },
+      }),
     ];
 
     const result = await bootstrapTasksToForgejoIssues({
@@ -204,7 +199,7 @@ describe("forgejo bootstrap", () => {
       "priority:medium",
     ]);
     expect(issueClient.snapshotLabels(target)).toContain("needs-review");
-    expect(linkStore.getByTaskId(binding.id, tasks[0].id)).toMatchObject({
+    expect(linkStore.getByTaskId(binding.id, tasks[0].localTaskId)).toMatchObject({
       issueNumber: 7,
       lastMirroredAt: expect.any(String),
     });
@@ -235,19 +230,12 @@ describe("forgejo bootstrap", () => {
       owner: target.owner,
       repo: target.repo,
       tasks: [
-        {
-          id: createTaskId("task-7"),
+        createExportedTask({
+          localTaskId: createTaskId("task-7"),
           title: "Unchanged title",
           description: "Unchanged body",
-          status: "active",
-          priority: "medium",
-          projectId: binding.projectId,
-          labels: [],
-          assignees: [],
-          comments: [],
-          createdAt: "2026-03-12T00:00:00.000Z",
           updatedAt: "2026-03-12T01:00:00.000Z",
-        },
+        }),
       ],
       issueClient,
       linkStore,
@@ -290,19 +278,12 @@ describe("forgejo bootstrap", () => {
       owner: target.owner,
       repo: target.repo,
       tasks: [
-        {
-          id: createTaskId("task-7"),
+        createExportedTask({
+          localTaskId: createTaskId("task-7"),
           title: "Older task",
           description: "Existing body",
-          status: "active",
-          priority: "medium",
-          projectId: binding.projectId,
-          labels: [],
-          assignees: [],
-          comments: [],
-          createdAt: "2026-03-12T00:00:00.000Z",
           updatedAt: "2026-03-12T01:00:00.000Z",
-        },
+        }),
       ],
       issueClient,
       linkStore,
@@ -349,20 +330,14 @@ describe("forgejo bootstrap", () => {
       owner: target.owner,
       repo: target.repo,
       tasks: [
-        {
-          id: createTaskId("task-remote-newer"),
+        createExportedTask({
+          localTaskId: createTaskId("task-remote-newer"),
           title: "test actors",
           description: undefined,
-          status: "active",
-          priority: "medium",
-          projectId: binding.projectId,
-          labels: [],
-          assignees: ["caradoc"],
-          comments: [],
-          createdAt: "2026-03-12T00:00:00.000Z",
+          assignees: [{ externalLogin: "caradoc", displayName: "caradoc" }],
           updatedAt: "2026-03-12T02:00:00.000Z",
           externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#9",
-        },
+        }),
       ],
       issueClient,
       linkStore,
@@ -389,32 +364,21 @@ describe("forgejo bootstrap", () => {
       owner: target.owner,
       repo: target.repo,
       tasks: [
-        {
-          id: createTaskId("task-a"),
+        createExportedTask({
+          localTaskId: createTaskId("task-a"),
           title: "Task A",
           description: "A",
-          status: "active",
-          priority: "medium",
-          projectId: binding.projectId,
           labels: ["bug"],
-          assignees: [],
-          comments: [],
-          createdAt: "2026-03-12T00:00:00.000Z",
           updatedAt: "2026-03-12T01:00:00.000Z",
-        },
-        {
-          id: createTaskId("task-b"),
+        }),
+        createExportedTask({
+          localTaskId: createTaskId("task-b"),
           title: "Task B",
           description: "B",
-          status: "active",
           priority: "high",
-          projectId: binding.projectId,
           labels: ["feature"],
-          assignees: [],
-          comments: [],
-          createdAt: "2026-03-12T00:00:00.000Z",
           updatedAt: "2026-03-12T01:00:00.000Z",
-        },
+        }),
       ],
       issueClient,
       linkStore: createInMemoryForgejoItemLinkStore(),

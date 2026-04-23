@@ -132,15 +132,14 @@ describe("label merging and filtering", () => {
 
   it("strips pre-existing status/priority from task labels before merge", () => {
     const payload = createForgejoIssueCreateFromTask({
-      id: "task-1" as never,
+      localTaskId: "task-1" as never,
       title: "Task",
       status: "inprogress",
       priority: "high",
-      projectId: "project-1" as never,
       labels: ["bug", "status:active", "priority:low"],
       assignees: [],
-      createdAt: "2026-03-12T00:00:00.000Z",
       updatedAt: "2026-03-12T00:00:00.000Z",
+      comments: [],
     });
 
     expect(payload.labels).toEqual(["bug", "status:inprogress", "priority:high"]);
