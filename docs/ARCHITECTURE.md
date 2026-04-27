@@ -184,7 +184,7 @@ Inside `storageDir`, the plugin should keep separate files or equivalent DB coll
 - `runtime-state.json`
 - optional diagnostics/error snapshots
 
-Legacy migration only moves the known state files above. It leaves unrelated files in place, removes the legacy directory only if it becomes empty, and fails clearly rather than overwriting current state.
+Legacy migration only moves the known state files above. It leaves unrelated files in place, removes the legacy directory only if it becomes empty, and fails clearly rather than overwriting current state. Operators can run `npm run migrate:forgejo-storage -- --from <absolute-old-dir> --to <absolute-new-dir>` on each affected machine before changing config; the script is dry-run by default and requires `--write` to move files. `settings.legacyStorageDir` remains available for one-time daemon-start migration when a scripted migration is not practical.
 
 ### Authentication differences vs GitHub
 
