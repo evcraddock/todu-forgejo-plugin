@@ -33,20 +33,7 @@ make dev
 make dev-cli CMD="plugin config forgejo --set '{\"settings\":{\"baseUrl\":\"https://your-forgejo.example.com\",\"token\":\"YOUR_TOKEN\",\"storageDir\":\"'\"${PWD}\"'/.dev/todu/forgejo-plugin-state\"},\"intervalSeconds\":30}'"
 ```
 
-If migrating state from an old cwd-relative directory, use the migration script on each machine before starting the daemon with the new config:
-
-```bash
-npm run migrate:forgejo-storage -- \
-  --from /absolute/path/to/old/.todu-forgejo-plugin \
-  --to "${PWD}/.dev/todu/forgejo-plugin-state"
-
-npm run migrate:forgejo-storage -- \
-  --from /absolute/path/to/old/.todu-forgejo-plugin \
-  --to "${PWD}/.dev/todu/forgejo-plugin-state" \
-  --write
-```
-
-The script is dry-run by default and moves only `item-links.json`, `comment-links.json`, and `runtime-state.json` without overwriting destination files. For one-time daemon-start migration, you can instead add `legacyStorageDir` with the absolute old path for one startup.
+If migrating state from an old cwd-relative directory, use the migration script on each machine before starting the daemon with the new config. See [Forgejo Storage Migration](FORGEJO-STORAGE-MIGRATION.md) for the full repeatable procedure.
 
 ### 4. Create a project and integration binding
 
