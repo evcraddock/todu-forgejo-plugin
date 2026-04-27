@@ -20,6 +20,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:coverage": "vitest run --coverage",
     "repair:forgejo-comment-links": "node ./scripts/reconcile-forgejo-comment-links.mjs",
+    "migrate:forgejo-storage": "node ./scripts/migrate-forgejo-storage.mjs",
     "check": "npm run lint && npm test",
     "pre-pr": "./scripts/pre-pr.sh"
   },

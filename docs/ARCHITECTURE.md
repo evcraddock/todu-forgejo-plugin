@@ -161,7 +161,7 @@ Recommended config shape:
   "settings": {
     "baseUrl": "https://code.example.com",
     "token": "<forgejo-pat>",
-    "storageDir": ".todu-forgejo-plugin"
+    "storageDir": "/var/lib/todu/forgejo-plugin"
   }
 }
 ```
@@ -170,16 +170,21 @@ Recommended config shape:
 
 - `settings.baseUrl` — required. Base web URL for the Forgejo instance. The plugin derives API paths from this.
 - `settings.token` — required. Personal access token used for all bindings.
-- `settings.storageDir` — optional. Directory for plugin-owned local state. When omitted, the provider keeps local state in memory for the current process only.
+- `settings.storageDir` — optional. Directory for plugin-owned local state. When omitted, the provider keeps local state in memory for the current process only. Absolute paths are used directly. Relative paths are resolved under the provider's stable app-owned state root instead of the daemon cwd, so durable state does not depend on where the daemon was started.
+- `settings.legacyStorageDir` — optional absolute path to a previous cwd-relative Forgejo plugin state directory. When provided with `settings.storageDir`, the provider migrates known state files from the legacy directory without overwriting existing destination files.
+
+The stable app-owned state root is `~/Library/Application Support/todu/forgejo-plugin` on macOS, `${XDG_STATE_HOME:-~/.local/state}/todu/forgejo-plugin` on Linux, and `%LOCALAPPDATA%\\todu\\forgejo-plugin` on Windows.
 
 ### Derived local files
 
 Inside `storageDir`, the plugin should keep separate files or equivalent DB collections for:
 
-- item links
-- comment links
-- binding runtime state
+- `item-links.json`
+- `comment-links.json`
+- `runtime-state.json`
 - optional diagnostics/error snapshots
+
+Legacy migration only moves the known state files above. It leaves unrelated files in place, removes the legacy directory only if it becomes empty, and fails clearly rather than overwriting current state. Operators can run `npm run migrate:forgejo-storage -- --from <absolute-old-dir> --to <absolute-new-dir>` on each affected machine before changing config; the script is dry-run by default and requires `--write` to move files. `settings.legacyStorageDir` remains available for one-time daemon-start migration when a scripted migration is not practical.
 
 ### Authentication differences vs GitHub
 

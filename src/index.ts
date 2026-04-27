@@ -10,8 +10,11 @@ export {
 export {
   ForgejoProviderConfigError,
   deriveForgejoApiBaseUrl,
+  expandForgejoHomePath,
+  getForgejoAppStateRoot,
   loadForgejoProviderSettings,
   normalizeForgejoBaseUrl,
+  resolveForgejoStorageDir,
   type ForgejoAuthType,
   type ForgejoProviderSettings,
 } from "@/forgejo-config";
@@ -76,6 +79,12 @@ export {
   type NormalizedForgejoStatus,
 } from "@/forgejo-fields";
 export { createHttpForgejoIssueClient } from "@/forgejo-http-client";
+export {
+  FORGEJO_STORAGE_STATE_FILES,
+  migrateForgejoLegacyStorage,
+  type ForgejoLegacyStorageMigrationOptions,
+  type ForgejoLegacyStorageMigrationResult,
+} from "@/forgejo-storage";
 export {
   createForgejoSyncLogger,
   formatForgejoLogEntry,
