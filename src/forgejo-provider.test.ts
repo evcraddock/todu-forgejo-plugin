@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import {
   createIntegrationBindingId,
   createProjectId,
@@ -72,6 +76,34 @@ describe("forgejo provider", () => {
 
     await provider.shutdown();
     expect(provider.getState().initialized).toBe(false);
+  });
+
+  it("migrates explicit legacy storage before creating file-backed stores", async () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "todu-forgejo-provider-"));
+    const storageDir = path.join(rootDir, "state");
+    const legacyStorageDir = path.join(rootDir, "legacy");
+    fs.mkdirSync(legacyStorageDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyStorageDir, "item-links.json"), "[]\n", "utf8");
+
+    try {
+      const provider = createForgejoSyncProvider({
+        issueClient: createInMemoryForgejoIssueClient(),
+      });
+      await provider.initialize({
+        settings: {
+          baseUrl: "https://code.example.com",
+          token: "secret-token",
+          storageDir,
+          legacyStorageDir,
+        },
+      });
+
+      expect(fs.existsSync(path.join(storageDir, "item-links.json"))).toBe(true);
+      expect(fs.existsSync(path.join(legacyStorageDir, "item-links.json"))).toBe(false);
+      expect(provider.getState().settings?.storageDir).toBe(storageDir);
+    } finally {
+      fs.rmSync(rootDir, { force: true, recursive: true });
+    }
   });
 
   it("validates bindings during pull and push", async () => {

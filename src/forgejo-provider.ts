@@ -43,6 +43,7 @@ import {
   type ForgejoRepositoryTarget,
 } from "@/forgejo-client";
 import { loadForgejoProviderSettings, type ForgejoProviderSettings } from "@/forgejo-config";
+import { migrateForgejoLegacyStorage } from "@/forgejo-storage";
 import { createHttpForgejoIssueClient } from "@/forgejo-http-client";
 import {
   createFileForgejoItemLinkStore,
@@ -217,6 +218,9 @@ export function createForgejoSyncProvider(
         issueClient = createHttpForgejoIssueClient(settings.token, {
           authType: settings.authType,
         });
+      }
+      if (settings.storageDir) {
+        migrateForgejoLegacyStorage(settings);
       }
       if (!options.linkStore && settings.storageDir) {
         linkStore = createFileForgejoItemLinkStore(

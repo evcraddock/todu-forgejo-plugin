@@ -30,8 +30,10 @@ make dev
 ### 3. Configure the plugin
 
 ```bash
-make dev-cli CMD="plugin config forgejo --set '{\"settings\":{\"baseUrl\":\"https://your-forgejo.example.com\",\"token\":\"YOUR_TOKEN\",\"storageDir\":\".dev/todu/forgejo-plugin-state\"},\"intervalSeconds\":30}'"
+make dev-cli CMD="plugin config forgejo --set '{\"settings\":{\"baseUrl\":\"https://your-forgejo.example.com\",\"token\":\"YOUR_TOKEN\",\"storageDir\":\"'\"${PWD}\"'/.dev/todu/forgejo-plugin-state\"},\"intervalSeconds\":30}'"
 ```
+
+If migrating state from an old cwd-relative directory, add `legacyStorageDir` with the absolute old path for one startup. The provider moves `item-links.json`, `comment-links.json`, and `runtime-state.json` into `storageDir` without overwriting destination files.
 
 ### 4. Create a project and integration binding
 
