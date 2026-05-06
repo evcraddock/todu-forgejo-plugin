@@ -1,6 +1,6 @@
-# PR Forgejo Review Worker
+# PR GitHub Review Worker
 
-Review Forgejo PR content and post review artifacts.
+Review GitHub PR content and post review artifacts.
 
 ## Required Inputs
 
@@ -10,14 +10,14 @@ Review Forgejo PR content and post review artifacts.
 ## Procedure
 
 1. Validate PR exists and is open, then load context:
-   - `fj pr view <number>`
-   - require open state
-   - `fj pr view <number> diff`
+   - `gh pr view <number> --json number,title,body,state`
+   - require `state=OPEN`
+   - `gh pr diff <number>`
 2. Follow shared review logic in `./pr-review-common.md`.
 3. Post structured PR review comment:
-   - `fj pr comment <number> --body-file <review-file>`
+   - `gh pr comment <number> --body-file <review-file>`
 4. Add matching task review note:
-   - `toduai note add --task <task-id> <content>`
+   - `todu note add --task <task-id> <content>`
 
 ## Output Contract (Required)
 

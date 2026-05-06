@@ -1,6 +1,6 @@
-# Project-local development config for the isolated toduai daemon and CLI.
-# Copy this to dev.toduai.yaml and fill in your plugin settings as needed:
-#   cp config/dev.toduai.yaml.template config/dev.toduai.yaml
+# Project-local development config for the isolated todu daemon and CLI.
+# Copy this to dev.todu.yaml and fill in your plugin settings as needed:
+#   cp config/dev.todu.yaml.template config/dev.todu.yaml
 #   make dev-cli CMD="plugin config forgejo --set '{\"settings\":{\"baseUrl\":\"https://code.example.com\",\"token\":\"forgejo_pat\"},\"intervalSeconds\":30}'"
 #
 # Note: absolute plugin path required because the Bun-compiled daemon

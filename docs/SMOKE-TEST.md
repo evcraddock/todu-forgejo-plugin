@@ -6,7 +6,7 @@ Manual validation path for the Forgejo sync provider against a live Forgejo inst
 
 - Node.js 20+
 - [overmind](https://github.com/DarthSim/overmind)
-- `toduai` CLI installed
+- `todu` CLI installed
 - A Forgejo instance with API access
 - A Forgejo personal access token with repo permissions
 - A test repository on the Forgejo instance
@@ -23,7 +23,7 @@ npm run build
 ### 2. Configure the dev environment
 
 ```bash
-cp config/dev.toduai.yaml.template config/dev.toduai.yaml
+cp config/dev.todu.yaml.template config/dev.todu.yaml
 make dev
 ```
 

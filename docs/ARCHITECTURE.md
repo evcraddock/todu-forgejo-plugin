@@ -6,7 +6,7 @@ Draft
 
 ## Summary
 
-`todu-forgejo-plugin` should be a `syncProvider` plugin for `toduai` that synchronizes one Forgejo repository with one todu project.
+`todu-forgejo-plugin` should be a `syncProvider` plugin for `todu` that synchronizes one Forgejo repository with one todu project.
 
 The design intentionally mirrors `todu-github-plugin` as closely as practical so implementation can reuse the same mental model, module boundaries, and operator workflow:
 
@@ -112,7 +112,7 @@ Use the generic todu integration control plane rather than plugin-owned binding 
 Example:
 
 ```bash
-toduai integration add \
+todu integration add \
   --provider forgejo \
   --project my-project \
   --target-kind repository \
@@ -525,7 +525,7 @@ If `Retry-After` is present, honor it; otherwise use local exponential backoff.
 
 ## Observability
 
-Shared binding status surfaced through `toduai integration status` should include:
+Shared binding status surfaced through `todu integration status` should include:
 
 - binding id
 - state: `running | idle | blocked | error`
