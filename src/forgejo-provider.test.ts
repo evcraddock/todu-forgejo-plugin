@@ -162,6 +162,81 @@ describe("forgejo provider", () => {
       comments: [],
     });
   });
+
+  it("routes bindings to selected named forgejo instances", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(
+      {
+        baseUrl: "https://forgejo.caradoc.com",
+        apiBaseUrl: "https://forgejo.caradoc.com/api/v1",
+        owner: "acme",
+        repo: "roadmap",
+      },
+      [
+        {
+          number: 1,
+          externalId: "https://forgejo.caradoc.com/acme/roadmap#1",
+          title: "Default instance issue",
+          state: "open",
+          labels: ["status:active"],
+          assignees: [],
+        },
+      ]
+    );
+    issueClient.seedIssues(
+      {
+        baseUrl: "https://forge.caradoc.com",
+        apiBaseUrl: "https://forge.caradoc.com/api/v1",
+        owner: "acme",
+        repo: "roadmap",
+      },
+      [
+        {
+          number: 1,
+          externalId: "https://forge.caradoc.com/acme/roadmap#1",
+          title: "Selected instance issue",
+          state: "open",
+          labels: ["status:active"],
+          assignees: [],
+        },
+      ]
+    );
+
+    const provider = createForgejoSyncProvider({ issueClient });
+    await provider.initialize({
+      settings: {
+        defaultInstance: "forgejo",
+        instances: {
+          forgejo: {
+            baseUrl: "https://forgejo.caradoc.com",
+            token: "forgejo-token",
+          },
+          forge: {
+            baseUrl: "https://forge.caradoc.com",
+            token: "forge-token",
+          },
+        },
+      },
+    });
+
+    const defaultResult = await provider.pull(createBinding(), project);
+    const selectedResult = await provider.pull(
+      createBinding({
+        id: createIntegrationBindingId("binding-2"),
+        options: { instance: "forge" },
+      }),
+      project
+    );
+
+    expect(defaultResult.tasks[0]).toMatchObject({
+      title: "Default instance issue",
+      externalId: "https://forgejo.caradoc.com/acme/roadmap#1",
+    });
+    expect(selectedResult.tasks[0]).toMatchObject({
+      title: "Selected instance issue",
+      externalId: "https://forge.caradoc.com/acme/roadmap#1",
+    });
+  });
 });
 
 describe("forgejo provider runtime integration", () => {

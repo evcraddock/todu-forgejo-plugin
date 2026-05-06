@@ -6,6 +6,7 @@ import {
   getForgejoAppStateRoot,
   loadForgejoProviderSettings,
   normalizeForgejoBaseUrl,
+  resolveForgejoInstanceSettings,
   resolveForgejoStorageDir,
 } from "@/forgejo-config";
 
@@ -36,6 +37,57 @@ describe("forgejo config", () => {
     });
 
     expect(settings.authType).toBe("bearer");
+  });
+
+  it("loads named forgejo instances with a configured default", () => {
+    const settings = loadForgejoProviderSettings({
+      settings: {
+        defaultInstance: "forgejo",
+        instances: {
+          forgejo: {
+            baseUrl: "https://forgejo.caradoc.com/",
+            token: " forgejo-token ",
+          },
+          forge: {
+            baseUrl: "https://forge.caradoc.com",
+            token: "forge-token",
+            authType: "bearer",
+          },
+        },
+      },
+    });
+
+    expect(settings.defaultInstance).toBe("forgejo");
+    expect(settings.baseUrl).toBe("https://forgejo.caradoc.com");
+    expect(settings.token).toBe("forgejo-token");
+    expect(settings.instances.forge.baseUrl).toBe("https://forge.caradoc.com");
+    expect(settings.instances.forge.apiBaseUrl).toBe("https://forge.caradoc.com/api/v1");
+    expect(settings.instances.forge.authType).toBe("bearer");
+  });
+
+  it("resolves the default or binding-selected forgejo instance", () => {
+    const settings = loadForgejoProviderSettings({
+      settings: {
+        defaultInstance: "forgejo",
+        instances: {
+          forgejo: {
+            baseUrl: "https://forgejo.caradoc.com",
+            token: "forgejo-token",
+          },
+          forge: {
+            baseUrl: "https://forge.caradoc.com",
+            token: "forge-token",
+          },
+        },
+      },
+    });
+
+    expect(resolveForgejoInstanceSettings(settings, {}).baseUrl).toBe(
+      "https://forgejo.caradoc.com"
+    );
+    expect(
+      resolveForgejoInstanceSettings(settings, { options: { instance: "forge" } }).baseUrl
+    ).toBe("https://forge.caradoc.com");
   });
 
   it("preserves an explicit absolute storage directory when configured", () => {
@@ -131,6 +183,54 @@ describe("forgejo config", () => {
         },
       })
     ).toThrow(ForgejoProviderConfigError);
+  });
+
+  it("rejects invalid named instance settings with instance context", () => {
+    expect(() =>
+      loadForgejoProviderSettings({
+        settings: {
+          defaultInstance: "forge",
+          instances: {
+            forge: {
+              baseUrl: "not-a-url",
+              token: "secret-token",
+            },
+          },
+        },
+      })
+    ).toThrow(/settings\.instances\.forge\.baseUrl/);
+  });
+
+  it("rejects unknown default or binding-selected instances", () => {
+    expect(() =>
+      loadForgejoProviderSettings({
+        settings: {
+          defaultInstance: "missing",
+          instances: {
+            forge: {
+              baseUrl: "https://forge.caradoc.com",
+              token: "secret-token",
+            },
+          },
+        },
+      })
+    ).toThrow(ForgejoProviderConfigError);
+
+    const settings = loadForgejoProviderSettings({
+      settings: {
+        defaultInstance: "forge",
+        instances: {
+          forge: {
+            baseUrl: "https://forge.caradoc.com",
+            token: "secret-token",
+          },
+        },
+      },
+    });
+
+    expect(() =>
+      resolveForgejoInstanceSettings(settings, { options: { instance: "missing" } })
+    ).toThrow(/Unknown Forgejo instance `missing`/);
   });
 
   it("rejects relative legacy storage directories", () => {

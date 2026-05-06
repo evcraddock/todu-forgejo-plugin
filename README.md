@@ -25,7 +25,32 @@ This registers the plugin with the `toduai` daemon. Use the actual path where yo
 
 ### 3. Configure plugin settings
 
-The current scaffold includes a minimal provider stub. Full Forgejo configuration will be implemented in the provider foundation phase.
+Single-instance configuration uses one Forgejo base URL and token for all `forgejo` repository bindings:
+
+```bash
+toduai plugin config forgejo --set '{"settings":{"baseUrl":"https://forgejo.caradoc.com","token":"forgejo_pat"},"intervalSeconds":300}'
+```
+
+Multi-instance configuration keeps one provider named `forgejo` and defines named Forgejo instances. Bindings without an instance option use `defaultInstance`.
+
+```bash
+toduai plugin config forgejo --set '{"settings":{"defaultInstance":"forgejo","instances":{"forgejo":{"baseUrl":"https://forgejo.caradoc.com","token":"forgejo_pat"},"forge":{"baseUrl":"https://forge.caradoc.com","token":"forge_pat"}}},"intervalSeconds":300}'
+```
+
+Repository bindings continue to use `owner/repo` as `targetRef`. Select a non-default Forgejo instance through binding options:
+
+```json
+{
+  "provider": "forgejo",
+  "targetKind": "repository",
+  "targetRef": "owner/repo",
+  "options": {
+    "instance": "forge"
+  }
+}
+```
+
+Each named instance supports `baseUrl`, `token`, and optional `authType` (`token` or `bearer`).
 
 ### 4. Verify
 

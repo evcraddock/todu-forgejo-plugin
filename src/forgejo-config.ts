@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-import type { SyncProviderConfig } from "@todu/core";
+import type { IntegrationBinding, SyncProviderConfig } from "@todu/core";
 
 export type ForgejoProviderConfigErrorCode =
   | "INVALID_SETTINGS"
@@ -9,17 +9,25 @@ export type ForgejoProviderConfigErrorCode =
   | "INVALID_BASE_URL"
   | "MISSING_TOKEN"
   | "INVALID_AUTH_TYPE"
-  | "INVALID_STORAGE_DIR";
+  | "INVALID_STORAGE_DIR"
+  | "INVALID_INSTANCE"
+  | "UNKNOWN_INSTANCE";
 
 export type ForgejoAuthType = "token" | "bearer";
 
-export interface ForgejoProviderSettings {
+export interface ForgejoInstanceSettings {
+  name: string;
   baseUrl: string;
   apiBaseUrl: string;
   token: string;
+  authType: ForgejoAuthType;
+}
+
+export interface ForgejoProviderSettings extends ForgejoInstanceSettings {
   storageDir: string | null;
   legacyStorageDir: string | null;
-  authType: ForgejoAuthType;
+  defaultInstance: string | null;
+  instances: Record<string, ForgejoInstanceSettings>;
 }
 
 export class ForgejoProviderConfigError extends Error {
@@ -38,14 +46,14 @@ export class ForgejoProviderConfigError extends Error {
   }
 }
 
-export function normalizeForgejoBaseUrl(baseUrl: string): string {
+export function normalizeForgejoBaseUrl(baseUrl: string, field = "settings.baseUrl"): string {
   const normalizedInput = baseUrl.trim();
   if (!normalizedInput) {
     throw new ForgejoProviderConfigError(
       "MISSING_BASE_URL",
-      "Invalid Forgejo provider settings: missing non-empty settings.baseUrl",
+      `Invalid Forgejo provider settings: missing non-empty ${field}`,
       {
-        field: "settings.baseUrl",
+        field,
       }
     );
   }
@@ -56,9 +64,9 @@ export function normalizeForgejoBaseUrl(baseUrl: string): string {
   } catch {
     throw new ForgejoProviderConfigError(
       "INVALID_BASE_URL",
-      `Invalid Forgejo provider settings: settings.baseUrl must be a valid URL (received: \`${baseUrl}\`)`,
+      `Invalid Forgejo provider settings: ${field} must be a valid URL (received: \`${baseUrl}\`)`,
       {
-        field: "settings.baseUrl",
+        field,
         baseUrl,
       }
     );
@@ -127,6 +135,52 @@ export function deriveForgejoApiBaseUrl(baseUrl: string): string {
   return `${normalizeForgejoBaseUrl(baseUrl)}/api/v1`;
 }
 
+export function getForgejoBindingInstanceName(
+  binding: Pick<IntegrationBinding, "options">
+): string | null {
+  const selectedInstance = binding.options?.instance;
+  if (selectedInstance === undefined || selectedInstance === null) {
+    return null;
+  }
+
+  if (typeof selectedInstance !== "string" || !selectedInstance.trim()) {
+    throw new ForgejoProviderConfigError(
+      "INVALID_INSTANCE",
+      "Invalid Forgejo integration binding option: options.instance must be a non-empty string",
+      {
+        field: "options.instance",
+        instance: selectedInstance,
+      }
+    );
+  }
+
+  return selectedInstance.trim();
+}
+
+export function resolveForgejoInstanceSettings(
+  settings: ForgejoProviderSettings,
+  binding: Pick<IntegrationBinding, "options">
+): ForgejoInstanceSettings {
+  const selectedInstance = getForgejoBindingInstanceName(binding) ?? settings.defaultInstance;
+  if (!selectedInstance) {
+    return settings;
+  }
+
+  const instance = settings.instances[selectedInstance];
+  if (!instance) {
+    throw new ForgejoProviderConfigError(
+      "UNKNOWN_INSTANCE",
+      `Unknown Forgejo instance \`${selectedInstance}\`: configure settings.instances.${selectedInstance}`,
+      {
+        field: "options.instance",
+        instance: selectedInstance,
+      }
+    );
+  }
+
+  return instance;
+}
+
 export function loadForgejoProviderSettings(config: SyncProviderConfig): ForgejoProviderSettings {
   const settings = config.settings;
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
@@ -136,19 +190,195 @@ export function loadForgejoProviderSettings(config: SyncProviderConfig): Forgejo
     );
   }
 
-  const baseUrl = normalizeForgejoBaseUrl(String(settings.baseUrl ?? ""));
+  const storage = loadForgejoStorageSettings(settings);
+  const instances = loadForgejoInstances(settings);
+  const defaultInstance = loadDefaultForgejoInstanceName(settings, instances);
+
+  const legacyInstance = loadOptionalForgejoInstance(settings, "settings");
+  const selectedDefaultInstance = defaultInstance ? instances[defaultInstance] : legacyInstance;
+
+  if (!selectedDefaultInstance) {
+    throw new ForgejoProviderConfigError(
+      "MISSING_BASE_URL",
+      "Invalid Forgejo provider settings: configure either settings.baseUrl/settings.token or settings.instances with settings.defaultInstance",
+      {
+        field: "settings.baseUrl",
+      }
+    );
+  }
+
+  return {
+    ...selectedDefaultInstance,
+    storageDir: storage.storageDir,
+    legacyStorageDir: storage.legacyStorageDir,
+    defaultInstance,
+    instances,
+  };
+}
+
+function loadDefaultForgejoInstanceName(
+  settings: Record<string, unknown>,
+  instances: Record<string, ForgejoInstanceSettings>
+): string | null {
+  const defaultInstance = settings.defaultInstance;
+  if (defaultInstance === undefined || defaultInstance === null) {
+    return null;
+  }
+
+  if (typeof defaultInstance !== "string" || !defaultInstance.trim()) {
+    throw new ForgejoProviderConfigError(
+      "INVALID_INSTANCE",
+      "Invalid Forgejo provider settings: settings.defaultInstance must be a non-empty string",
+      {
+        field: "settings.defaultInstance",
+        defaultInstance,
+      }
+    );
+  }
+
+  const normalizedDefaultInstance = defaultInstance.trim();
+  if (!instances[normalizedDefaultInstance]) {
+    throw new ForgejoProviderConfigError(
+      "UNKNOWN_INSTANCE",
+      `Invalid Forgejo provider settings: settings.defaultInstance \`${normalizedDefaultInstance}\` is not defined in settings.instances`,
+      {
+        field: "settings.defaultInstance",
+        defaultInstance: normalizedDefaultInstance,
+      }
+    );
+  }
+
+  return normalizedDefaultInstance;
+}
+
+function loadForgejoInstances(
+  settings: Record<string, unknown>
+): Record<string, ForgejoInstanceSettings> {
+  const rawInstances = settings.instances;
+  if (rawInstances === undefined || rawInstances === null) {
+    return {};
+  }
+
+  if (typeof rawInstances !== "object" || Array.isArray(rawInstances)) {
+    throw new ForgejoProviderConfigError(
+      "INVALID_INSTANCE",
+      "Invalid Forgejo provider settings: settings.instances must be an object when provided",
+      {
+        field: "settings.instances",
+      }
+    );
+  }
+
+  const instances: Record<string, ForgejoInstanceSettings> = {};
+  for (const [instanceName, rawInstance] of Object.entries(rawInstances)) {
+    const normalizedInstanceName = instanceName.trim();
+    if (!normalizedInstanceName) {
+      throw new ForgejoProviderConfigError(
+        "INVALID_INSTANCE",
+        "Invalid Forgejo provider settings: settings.instances keys must be non-empty strings",
+        {
+          field: "settings.instances",
+          instance: instanceName,
+        }
+      );
+    }
+
+    instances[normalizedInstanceName] = loadRequiredForgejoInstance(
+      rawInstance,
+      normalizedInstanceName,
+      `settings.instances.${normalizedInstanceName}`
+    );
+  }
+
+  return instances;
+}
+
+function loadRequiredForgejoInstance(
+  rawInstance: unknown,
+  name: string,
+  fieldPrefix: string
+): ForgejoInstanceSettings {
+  if (!rawInstance || typeof rawInstance !== "object" || Array.isArray(rawInstance)) {
+    throw new ForgejoProviderConfigError(
+      "INVALID_INSTANCE",
+      `Invalid Forgejo provider settings: ${fieldPrefix} must be an object`,
+      {
+        field: fieldPrefix,
+        instance: name,
+      }
+    );
+  }
+
+  const instance = loadOptionalForgejoInstance(
+    rawInstance as Record<string, unknown>,
+    fieldPrefix,
+    name
+  );
+  if (!instance) {
+    throw new ForgejoProviderConfigError(
+      "MISSING_BASE_URL",
+      `Invalid Forgejo provider settings: missing non-empty ${fieldPrefix}.baseUrl`,
+      {
+        field: `${fieldPrefix}.baseUrl`,
+        instance: name,
+      }
+    );
+  }
+
+  return instance;
+}
+
+function loadOptionalForgejoInstance(
+  settings: Record<string, unknown>,
+  fieldPrefix: string,
+  name = "default"
+): ForgejoInstanceSettings | null {
+  const hasBaseUrl = settings.baseUrl !== undefined && settings.baseUrl !== null;
+  const hasToken = settings.token !== undefined && settings.token !== null;
+  if (!hasBaseUrl && !hasToken) {
+    return null;
+  }
+
+  const baseUrl = normalizeForgejoBaseUrl(String(settings.baseUrl ?? ""), `${fieldPrefix}.baseUrl`);
 
   const token = settings.token;
   if (typeof token !== "string" || !token.trim()) {
     throw new ForgejoProviderConfigError(
       "MISSING_TOKEN",
-      "Invalid Forgejo provider settings: missing non-empty settings.token",
+      `Invalid Forgejo provider settings: missing non-empty ${fieldPrefix}.token`,
       {
-        field: "settings.token",
+        field: `${fieldPrefix}.token`,
+        instance: name,
       }
     );
   }
 
+  const authType = settings.authType;
+  if (authType !== undefined && authType !== "token" && authType !== "bearer") {
+    throw new ForgejoProviderConfigError(
+      "INVALID_AUTH_TYPE",
+      `Invalid Forgejo provider settings: ${fieldPrefix}.authType must be \`token\` or \`bearer\` when provided`,
+      {
+        field: `${fieldPrefix}.authType`,
+        instance: name,
+        authType,
+      }
+    );
+  }
+
+  return {
+    name,
+    baseUrl,
+    apiBaseUrl: deriveForgejoApiBaseUrl(baseUrl),
+    token: token.trim(),
+    authType: authType ?? "token",
+  };
+}
+
+function loadForgejoStorageSettings(settings: Record<string, unknown>): {
+  storageDir: string | null;
+  legacyStorageDir: string | null;
+} {
   const storageDir = settings.storageDir;
   if (storageDir !== undefined && (typeof storageDir !== "string" || !storageDir.trim())) {
     throw new ForgejoProviderConfigError(
@@ -197,24 +427,8 @@ export function loadForgejoProviderSettings(config: SyncProviderConfig): Forgejo
     );
   }
 
-  const authType = settings.authType;
-  if (authType !== undefined && authType !== "token" && authType !== "bearer") {
-    throw new ForgejoProviderConfigError(
-      "INVALID_AUTH_TYPE",
-      "Invalid Forgejo provider settings: settings.authType must be `token` or `bearer` when provided",
-      {
-        field: "settings.authType",
-        authType,
-      }
-    );
-  }
-
   return {
-    baseUrl,
-    apiBaseUrl: deriveForgejoApiBaseUrl(baseUrl),
-    token: token.trim(),
     storageDir: typeof storageDir === "string" ? resolveForgejoStorageDir(storageDir) : null,
     legacyStorageDir: resolvedLegacyStorageDir ? path.normalize(resolvedLegacyStorageDir) : null,
-    authType: authType ?? "token",
   };
 }
