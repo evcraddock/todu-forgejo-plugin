@@ -37,17 +37,59 @@ Multi-instance configuration keeps one provider named `forgejo` and defines name
 todu plugin config forgejo --set '{"settings":{"defaultInstance":"forgejo","instances":{"forgejo":{"baseUrl":"https://forgejo.caradoc.com","token":"forgejo_pat"},"forge":{"baseUrl":"https://forge.caradoc.com","token":"forge_pat"}}},"intervalSeconds":300}'
 ```
 
+For production, prefer reading tokens from your shell environment instead of typing them directly into command history. This example preserves `forgejo.caradoc.com` as the default instance and adds `forge.caradoc.com` as the named `forge` instance:
+
+```bash
+source ~/.zsh_local
+
+CURRENT_STORAGE_DIR="/home/erik/.config/todu/data/forgejo-plugin-state"
+
+FORGEJO_TOKEN="<existing-forgejo.caradoc.com-token>"
+
+CONFIG=$(node -e '
+const config = {
+  enabled: true,
+  settings: {
+    defaultInstance: "forgejo",
+    instances: {
+      forgejo: {
+        baseUrl: "https://forgejo.caradoc.com",
+        token: process.env.FORGEJO_TOKEN,
+      },
+      forge: {
+        baseUrl: "https://forge.caradoc.com",
+        token: process.env.FORGE_TOKEN,
+      },
+    },
+    storageDir: process.env.CURRENT_STORAGE_DIR,
+  },
+  intervalSeconds: 300,
+};
+if (!config.settings.instances.forgejo.token) throw new Error("FORGEJO_TOKEN is required");
+if (!config.settings.instances.forge.token) throw new Error("FORGE_TOKEN is required");
+console.log(JSON.stringify(config));
+')
+
+todu plugin config forgejo --set "$CONFIG"
+todu daemon restart
+```
+
 Repository bindings continue to use `owner/repo` as `targetRef`. Select a non-default Forgejo instance through binding options:
 
-```json
-{
-  "provider": "forgejo",
-  "targetKind": "repository",
-  "targetRef": "owner/repo",
-  "options": {
-    "instance": "forge"
-  }
-}
+```bash
+todu integration add \
+  --provider forgejo \
+  --project "<project-name-or-id>" \
+  --target-kind repository \
+  --target "<owner/repo>" \
+  --strategy pull \
+  --options '{"instance":"forge"}'
+```
+
+Use `--strategy pull` for the first smoke test. Switch to `bidirectional` after confirming the selected repository imports correctly.
+
+```bash
+todu integration set-strategy <binding-id> bidirectional
 ```
 
 Each named instance supports `baseUrl`, `token`, and optional `authType` (`token` or `bearer`).
