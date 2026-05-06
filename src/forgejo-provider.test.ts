@@ -165,6 +165,12 @@ describe("forgejo provider", () => {
 
   it("routes bindings to selected named forgejo instances", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
+    const listIssueTargets: Array<{ baseUrl: string; token?: string }> = [];
+    const originalListIssues = issueClient.listIssues.bind(issueClient);
+    issueClient.listIssues = async (bindingTarget, options) => {
+      listIssueTargets.push({ baseUrl: bindingTarget.baseUrl, token: bindingTarget.token });
+      return originalListIssues(bindingTarget, options);
+    };
     issueClient.seedIssues(
       {
         baseUrl: "https://forgejo.caradoc.com",
@@ -236,6 +242,10 @@ describe("forgejo provider", () => {
       title: "Selected instance issue",
       externalId: "https://forge.caradoc.com/acme/roadmap#1",
     });
+    expect(listIssueTargets).toEqual([
+      { baseUrl: "https://forgejo.caradoc.com", token: "forgejo-token" },
+      { baseUrl: "https://forge.caradoc.com", token: "forge-token" },
+    ]);
   });
 });
 
