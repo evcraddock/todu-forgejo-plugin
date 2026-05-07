@@ -737,12 +737,12 @@ For Forgejo-specific dev:
 - run a disposable local Forgejo instance
 - create a test user and PAT
 - seed one or two repositories with issues, labels, and comments
-- point `settings.baseUrl` to that instance
+- point `settings.baseUrl` to that instance for legacy single-instance testing, or configure `settings.instances` for multi-instance testing
 
 ## Risks and Open Questions
 
 1. **External ID final shape** — the proposed `<baseUrl>/<owner>/<repo>#<number>` format is workable, but should be locked before implementation starts.
-2. **Single-instance assumption** — v1 uses one configured Forgejo base URL per plugin installation. If multi-instance support is needed soon, binding shape may need to grow.
+2. **Multi-instance binding operations** — v1 supports named instances through binding options, but repeatable operator migration/cutover flows should remain carefully documented and tested outside the core provider logic.
 3. **Auth compatibility** — some deployments may require header compatibility handling beyond one default mode.
 4. **Assignee support variance** — verify expected response shapes against the target Forgejo version.
 5. **Label creation permissions** — some tokens may read issues but lack label-management rights.
