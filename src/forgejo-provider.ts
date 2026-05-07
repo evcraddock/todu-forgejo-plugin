@@ -315,7 +315,6 @@ export function createForgejoSyncProvider(
           target,
           itemLinkStore: linkStore,
           commentLinkStore,
-          issueNumbers: lastPullResult.touchedIssueNumbers,
           since: runtimeState.lastSuccessAt ?? undefined,
           onIssueError: ({ itemLink, error }) => {
             const classification = classifyForgejoSyncError(error);

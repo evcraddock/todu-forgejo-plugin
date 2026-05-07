@@ -353,7 +353,7 @@ describe("forgejo provider runtime integration", () => {
     expect(provider.getState().commentLinks).toHaveLength(1);
   });
 
-  it("limits incremental comment pulls to touched issues", async () => {
+  it("checks all linked issues for incremental comments", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
       {
@@ -447,9 +447,10 @@ describe("forgejo provider runtime integration", () => {
 
     await provider.pull(createBinding(), project);
 
-    expect(listCommentsCalls).toHaveLength(1);
-    expect(listCommentsCalls[0].issueNumber).toBe(7);
-    expect(listCommentsCalls[0].since).toEqual(expect.any(String));
+    expect(listCommentsCalls).toEqual([
+      { issueNumber: 7, since: expect.any(String) },
+      { issueNumber: 8, since: expect.any(String) },
+    ]);
   });
 
   it("records failure in runtime store when pull throws", async () => {
