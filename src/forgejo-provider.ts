@@ -42,7 +42,11 @@ import {
   type ForgejoIssueClient,
   type ForgejoRepositoryTarget,
 } from "@/forgejo-client";
-import { loadForgejoProviderSettings, type ForgejoProviderSettings } from "@/forgejo-config";
+import {
+  loadForgejoProviderSettings,
+  resolveForgejoInstanceSettings,
+  type ForgejoProviderSettings,
+} from "@/forgejo-config";
 import { migrateForgejoLegacyStorage } from "@/forgejo-storage";
 import { createHttpForgejoIssueClient } from "@/forgejo-http-client";
 import {
@@ -118,11 +122,14 @@ export function createForgejoRepositoryTarget(
   parsedBinding: ForgejoRepositoryBinding,
   settings: ForgejoProviderSettings
 ): ForgejoRepositoryTarget {
+  const instance = resolveForgejoInstanceSettings(settings, parsedBinding.binding);
   return {
     owner: parsedBinding.owner,
     repo: parsedBinding.repo,
-    baseUrl: settings.baseUrl,
-    apiBaseUrl: settings.apiBaseUrl,
+    baseUrl: instance.baseUrl,
+    apiBaseUrl: instance.apiBaseUrl,
+    token: instance.token,
+    authType: instance.authType,
   };
 }
 
@@ -292,6 +299,8 @@ export function createForgejoSyncProvider(
           binding,
           baseUrl: target.baseUrl,
           apiBaseUrl: target.apiBaseUrl,
+          token: target.token,
+          authType: target.authType,
           owner: target.owner,
           repo: target.repo,
           issueClient,
@@ -306,7 +315,6 @@ export function createForgejoSyncProvider(
           target,
           itemLinkStore: linkStore,
           commentLinkStore,
-          issueNumbers: lastPullResult.touchedIssueNumbers,
           since: runtimeState.lastSuccessAt ?? undefined,
           onIssueError: ({ itemLink, error }) => {
             const classification = classifyForgejoSyncError(error);
@@ -393,6 +401,8 @@ export function createForgejoSyncProvider(
           binding,
           baseUrl: target.baseUrl,
           apiBaseUrl: target.apiBaseUrl,
+          token: target.token,
+          authType: target.authType,
           owner: target.owner,
           repo: target.repo,
           tasks,

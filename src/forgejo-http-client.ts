@@ -173,7 +173,10 @@ export function createHttpForgejoIssueClient(
       method,
       headers: {
         Accept: "application/json",
-        Authorization: createForgejoAuthorizationHeader(token, authType),
+        Authorization: createForgejoAuthorizationHeader(
+          target.token ?? token,
+          target.authType ?? authType
+        ),
         ...(body != null ? { "Content-Type": "application/json" } : {}),
       },
       ...(body != null ? { body: JSON.stringify(body) } : {}),

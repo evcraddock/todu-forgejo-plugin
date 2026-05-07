@@ -162,6 +162,91 @@ describe("forgejo provider", () => {
       comments: [],
     });
   });
+
+  it("routes bindings to selected named forgejo instances", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const listIssueTargets: Array<{ baseUrl: string; token?: string }> = [];
+    const originalListIssues = issueClient.listIssues.bind(issueClient);
+    issueClient.listIssues = async (bindingTarget, options) => {
+      listIssueTargets.push({ baseUrl: bindingTarget.baseUrl, token: bindingTarget.token });
+      return originalListIssues(bindingTarget, options);
+    };
+    issueClient.seedIssues(
+      {
+        baseUrl: "https://forgejo.caradoc.com",
+        apiBaseUrl: "https://forgejo.caradoc.com/api/v1",
+        owner: "acme",
+        repo: "roadmap",
+      },
+      [
+        {
+          number: 1,
+          externalId: "https://forgejo.caradoc.com/acme/roadmap#1",
+          title: "Default instance issue",
+          state: "open",
+          labels: ["status:active"],
+          assignees: [],
+        },
+      ]
+    );
+    issueClient.seedIssues(
+      {
+        baseUrl: "https://forge.caradoc.com",
+        apiBaseUrl: "https://forge.caradoc.com/api/v1",
+        owner: "acme",
+        repo: "roadmap",
+      },
+      [
+        {
+          number: 1,
+          externalId: "https://forge.caradoc.com/acme/roadmap#1",
+          title: "Selected instance issue",
+          state: "open",
+          labels: ["status:active"],
+          assignees: [],
+        },
+      ]
+    );
+
+    const provider = createForgejoSyncProvider({ issueClient });
+    await provider.initialize({
+      settings: {
+        defaultInstance: "forgejo",
+        instances: {
+          forgejo: {
+            baseUrl: "https://forgejo.caradoc.com",
+            token: "forgejo-token",
+          },
+          forge: {
+            baseUrl: "https://forge.caradoc.com",
+            token: "forge-token",
+          },
+        },
+      },
+    });
+
+    const defaultResult = await provider.pull(createBinding(), project);
+    const selectedResult = await provider.pull(
+      createBinding({
+        id: createIntegrationBindingId("binding-2"),
+        options: { instance: "forge" },
+      }),
+      project
+    );
+
+    expect(defaultResult.tasks[0]).toMatchObject({
+      title: "Default instance issue",
+      externalId: "https://forgejo.caradoc.com/acme/roadmap#1",
+    });
+    expect(selectedResult.tasks[0]).toMatchObject({
+      title: "Selected instance issue",
+      externalId: "https://forge.caradoc.com/acme/roadmap#1",
+    });
+    expect(listIssueTargets).toEqual([
+      { baseUrl: "https://forgejo.caradoc.com", token: "forgejo-token" },
+      { baseUrl: "https://forge.caradoc.com", token: "forge-token" },
+    ]);
+  });
 });
 
 describe("forgejo provider runtime integration", () => {
@@ -268,7 +353,7 @@ describe("forgejo provider runtime integration", () => {
     expect(provider.getState().commentLinks).toHaveLength(1);
   });
 
-  it("limits incremental comment pulls to touched issues", async () => {
+  it("checks all linked issues for incremental comments", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
       {
@@ -362,9 +447,10 @@ describe("forgejo provider runtime integration", () => {
 
     await provider.pull(createBinding(), project);
 
-    expect(listCommentsCalls).toHaveLength(1);
-    expect(listCommentsCalls[0].issueNumber).toBe(7);
-    expect(listCommentsCalls[0].since).toEqual(expect.any(String));
+    expect(listCommentsCalls).toEqual([
+      { issueNumber: 7, since: expect.any(String) },
+      { issueNumber: 8, since: expect.any(String) },
+    ]);
   });
 
   it("records failure in runtime store when pull throws", async () => {

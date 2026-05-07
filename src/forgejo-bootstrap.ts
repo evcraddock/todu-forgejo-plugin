@@ -6,6 +6,7 @@ import {
   mapForgejoIssueToImportedTask,
 } from "@/forgejo-fields";
 import { type ForgejoIssue, type ForgejoIssueClient } from "@/forgejo-client";
+import type { ForgejoAuthType } from "@/forgejo-config";
 import type { ForgejoCommentLinkStore } from "@/forgejo-comment-links";
 import { parseForgejoIssueExternalId } from "@/forgejo-ids";
 import {
@@ -48,6 +49,8 @@ export async function bootstrapForgejoIssuesToTasks(input: {
   binding: IntegrationBinding;
   baseUrl: string;
   apiBaseUrl: string;
+  token?: string;
+  authType?: ForgejoAuthType;
   owner: string;
   repo: string;
   issueClient: ForgejoIssueClient;
@@ -59,6 +62,8 @@ export async function bootstrapForgejoIssuesToTasks(input: {
     {
       baseUrl: input.baseUrl,
       apiBaseUrl: input.apiBaseUrl,
+      token: input.token,
+      authType: input.authType,
       owner: input.owner,
       repo: input.repo,
     },
@@ -115,6 +120,8 @@ export async function bootstrapTasksToForgejoIssues(input: {
   binding: IntegrationBinding;
   baseUrl: string;
   apiBaseUrl: string;
+  token?: string;
+  authType?: ForgejoAuthType;
   owner: string;
   repo: string;
   tasks: ExportedTaskInput[];
@@ -135,6 +142,8 @@ export async function bootstrapTasksToForgejoIssues(input: {
   const target = {
     baseUrl: input.baseUrl,
     apiBaseUrl: input.apiBaseUrl,
+    token: input.token,
+    authType: input.authType,
     owner: input.owner,
     repo: input.repo,
   };

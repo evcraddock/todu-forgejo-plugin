@@ -12,10 +12,13 @@ export {
   deriveForgejoApiBaseUrl,
   expandForgejoHomePath,
   getForgejoAppStateRoot,
+  getForgejoBindingInstanceName,
   loadForgejoProviderSettings,
   normalizeForgejoBaseUrl,
+  resolveForgejoInstanceSettings,
   resolveForgejoStorageDir,
   type ForgejoAuthType,
+  type ForgejoInstanceSettings,
   type ForgejoProviderSettings,
 } from "@/forgejo-config";
 export {

@@ -10,7 +10,7 @@ Shared review logic for all hosts.
 
 ## Procedure
 
-1. Load task details with `toduai --format json task show <task-id>`.
+1. Load task details with `todu --format json task show <task-id>`.
 2. Extract the task objective and acceptance criteria from the task description.
 3. Review PR changes against each acceptance criterion.
    - mark each criterion as: `met` | `partial` | `not-evident`
@@ -45,7 +45,7 @@ Review comment content must include:
 
 ## Task Note Requirement
 
-After posting the PR comment, add a matching task note with `toduai note add --task <task-id> <content>`.
+After posting the PR comment, add a matching task note with `todu note add --task <task-id> <content>`.
 
 ## Common Result Fields
 

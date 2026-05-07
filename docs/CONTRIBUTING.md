@@ -108,8 +108,8 @@ If the task touches the local daemon workflow, also run the relevant dev-environ
 
 - Push your branch to GitHub.
 - Use pull requests for review and integration.
-- Run the `toduai-pr-review` skill as part of the review gate.
-- Treat the `toduai-pr-review` result as part of the approval gate and stop for explicit human merge approval after review is complete.
+- Run the `todu-pr-review` skill as part of the review gate.
+- Treat the `todu-pr-review` result as part of the approval gate and stop for explicit human merge approval after review is complete.
 - Never auto-merge without explicit human approval.
 
 ## When stuck

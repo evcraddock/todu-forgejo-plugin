@@ -7,6 +7,8 @@ import { formatForgejoIssueExternalId } from "@/forgejo-ids";
 export interface ForgejoRepositoryTarget extends ForgejoRepositoryRef {
   baseUrl: string;
   apiBaseUrl: string;
+  token?: string;
+  authType?: ForgejoAuthType;
 }
 
 export type ForgejoActorRef = ExternalActorRef;

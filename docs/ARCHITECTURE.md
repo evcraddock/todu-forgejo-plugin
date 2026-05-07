@@ -6,7 +6,7 @@ Draft
 
 ## Summary
 
-`todu-forgejo-plugin` should be a `syncProvider` plugin for `toduai` that synchronizes one Forgejo repository with one todu project.
+`todu-forgejo-plugin` should be a `syncProvider` plugin for `todu` that synchronizes one Forgejo repository with one todu project.
 
 The design intentionally mirrors `todu-github-plugin` as closely as practical so implementation can reuse the same mental model, module boundaries, and operator workflow:
 
@@ -29,7 +29,7 @@ The main required divergence from the GitHub plugin is that Forgejo is self-host
 
 ## Non-Goals for v1
 
-- Multiple Forgejo instances from one plugin configuration.
+- Webhook-driven multi-instance discovery or automatic instance routing.
 - Webhook-driven sync.
 - Pull request synchronization.
 - Milestones, projects, due dates, reactions, attachments, or issue relationships.
@@ -112,7 +112,7 @@ Use the generic todu integration control plane rather than plugin-owned binding 
 Example:
 
 ```bash
-toduai integration add \
+todu integration add \
   --provider forgejo \
   --project my-project \
   --target-kind repository \
@@ -128,29 +128,31 @@ Expected binding fields:
 - `projectId`
 - `strategy = bidirectional | pull | push | none`
 - `enabled`
+- optional `options.instance` for named Forgejo instance selection
 - timestamps and binding id
 
 ### Why `targetRef` stays `owner/repo`
 
-This preserves the GitHub plugin UX and keeps repo selection simple. The Forgejo instance itself comes from plugin config rather than from each binding.
+This preserves the GitHub plugin UX and keeps repo selection simple. The Forgejo instance itself comes from plugin config and optional binding metadata rather than being embedded in every `targetRef`.
 
 ### v1 instance model
 
-v1 assumes one configured Forgejo base URL per plugin installation.
+v1 supports one default Forgejo instance plus optional named instances in one plugin configuration.
 
 Implication:
 
-- one daemon/plugin config talks to one Forgejo instance
-- many repo bindings on that instance are allowed
-- multiple Forgejo instances require separate plugin configs/daemons today, or a future per-binding instance field
+- a single provider identity, `forgejo`, can sync repositories from multiple Forgejo hosts
+- many repo bindings on each configured instance are allowed
+- bindings without an instance selector use the default/legacy instance
+- bindings can select a named instance with `options.instance`
 
-This keeps v1 aligned with the GitHub plugin's single-host assumption while still supporting self-hosted Forgejo.
+This keeps the binding target as `owner/repo` while making the self-hosted Forgejo instance an explicit provider option instead of a separate provider name.
 
 ## Authentication and Configuration
 
 ## Required plugin settings
 
-Recommended config shape:
+Legacy single-instance config remains supported:
 
 ```json
 {
@@ -166,10 +168,36 @@ Recommended config shape:
 }
 ```
 
+Multi-instance config uses named instances under one provider:
+
+```json
+{
+  "enabled": true,
+  "intervalSeconds": 300,
+  "settings": {
+    "defaultInstance": "forgejo",
+    "instances": {
+      "forgejo": {
+        "baseUrl": "https://forgejo.caradoc.com",
+        "token": "<forgejo-pat>"
+      },
+      "forge": {
+        "baseUrl": "https://forge.caradoc.com",
+        "token": "<forge-pat>",
+        "authType": "token"
+      }
+    },
+    "storageDir": "/var/lib/todu/forgejo-plugin"
+  }
+}
+```
+
 ### Settings
 
-- `settings.baseUrl` — required. Base web URL for the Forgejo instance. The plugin derives API paths from this.
-- `settings.token` — required. Personal access token used for all bindings.
+- `settings.baseUrl` — legacy default instance base web URL. Required only when `settings.instances` / `settings.defaultInstance` are not used.
+- `settings.token` — legacy default instance personal access token. Required only when `settings.instances` / `settings.defaultInstance` are not used.
+- `settings.defaultInstance` — optional default named instance for bindings that omit `options.instance`. Required for instances-only configuration.
+- `settings.instances` — optional object of named Forgejo instance settings. Each instance requires `baseUrl` and `token`, and may set `authType`.
 - `settings.storageDir` — optional. Directory for plugin-owned local state. When omitted, the provider keeps local state in memory for the current process only. Absolute paths are used directly. Relative paths are resolved under the provider's stable app-owned state root instead of the daemon cwd, so durable state does not depend on where the daemon was started.
 - `settings.legacyStorageDir` — optional absolute path to a previous cwd-relative Forgejo plugin state directory. When provided with `settings.storageDir`, the provider migrates known state files from the legacy directory without overwriting existing destination files.
 
@@ -497,7 +525,7 @@ If `Retry-After` is present, honor it; otherwise use local exponential backoff.
 
 ## Observability
 
-Shared binding status surfaced through `toduai integration status` should include:
+Shared binding status surfaced through `todu integration status` should include:
 
 - binding id
 - state: `running | idle | blocked | error`
@@ -709,12 +737,12 @@ For Forgejo-specific dev:
 - run a disposable local Forgejo instance
 - create a test user and PAT
 - seed one or two repositories with issues, labels, and comments
-- point `settings.baseUrl` to that instance
+- point `settings.baseUrl` to that instance for legacy single-instance testing, or configure `settings.instances` for multi-instance testing
 
 ## Risks and Open Questions
 
 1. **External ID final shape** — the proposed `<baseUrl>/<owner>/<repo>#<number>` format is workable, but should be locked before implementation starts.
-2. **Single-instance assumption** — v1 uses one configured Forgejo base URL per plugin installation. If multi-instance support is needed soon, binding shape may need to grow.
+2. **Multi-instance binding operations** — v1 supports named instances through binding options, but repeatable operator migration/cutover flows should remain carefully documented and tested outside the core provider logic.
 3. **Auth compatibility** — some deployments may require header compatibility handling beyond one default mode.
 4. **Assignee support variance** — verify expected response shapes against the target Forgejo version.
 5. **Label creation permissions** — some tokens may read issues but lack label-management rights.

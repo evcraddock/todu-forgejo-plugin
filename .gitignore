@@ -30,8 +30,8 @@ coverage/
 # Local development runtime state
 .dev/
 
-# Dev config contains secrets (use dev.toduai.yaml.template)
-config/dev.toduai.yaml
+# Dev config contains secrets (use dev.todu.yaml.template)
+config/dev.todu.yaml
 
 # Plugin runtime data
 .todu-forgejo-plugin/

@@ -30,7 +30,7 @@ Key commands:
 
 - `make dev` - start the local dev environment scaffold
 - `make dev-stop` - stop the local dev environment
-- `make dev-cli CMD="..."` - run `toduai` commands against the isolated dev config
+- `make dev-cli CMD="..."` - run `todu` commands against the isolated dev config
 - `npm test` - run tests
 - `npm run lint` - run the linter
 - `npm run format` - format code

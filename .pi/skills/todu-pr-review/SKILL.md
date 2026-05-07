@@ -1,10 +1,10 @@
 ---
-name: toduai-pr-review
-description: Review a pull request, verify it against a toduai task, post a PR review comment plus a matching toduai task note, and stop at the human merge gate. Use when user says "request review", "review PR", or "get this reviewed" in projects that track work in toduai.
+name: todu-pr-review
+description: Review a pull request, verify it against a todu task, post a PR review comment plus a matching todu task note, and stop at the human merge gate. Use when user says "request review", "review PR", or "get this reviewed" in projects that track work in todu.
 allowed-tools: Bash
 ---
 
-# Toduai PR Review
+# Todu PR Review
 
 Review a PR and stop before merge.
 
