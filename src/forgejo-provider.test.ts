@@ -12,6 +12,7 @@ import {
 
 import { FORGEJO_PROVIDER_NAME, FORGEJO_REPOSITORY_TARGET_KIND } from "@/forgejo-binding";
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
+import { formatAttributedBody, formatToduAttribution } from "@/forgejo-comments";
 import { createForgejoSyncLogger } from "@/forgejo-logger";
 import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
 import { createForgejoLoopPreventionStore } from "@/forgejo-loop-prevention";
@@ -351,6 +352,151 @@ describe("forgejo provider runtime integration", () => {
     });
     expect(result.comments?.[0].body).toContain("Imported comment body");
     expect(provider.getState().commentLinks).toHaveLength(1);
+  });
+
+  it("keeps bidirectional comment sync idempotent across push and pull cycles", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore: createInMemoryForgejoBindingRuntimeStore(),
+    });
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await provider.pull(createBinding(), project);
+    const firstPush = await provider.push(
+      createBinding(),
+      [
+        createExportedTask({
+          localTaskId: createTaskId("task-1"),
+          externalId: "https://code.example.com/acme/roadmap#7",
+          comments: [
+            {
+              localNoteId: "note-1" as never,
+              body: "Close-gate summary",
+              createdAt: "2026-03-12T01:00:00.000Z",
+            },
+          ],
+        }),
+      ],
+      project
+    );
+    const pullAfterPush = await provider.pull(createBinding(), project);
+    const secondPush = await provider.push(
+      createBinding(),
+      [
+        createExportedTask({
+          localTaskId: createTaskId("task-1"),
+          externalId: "https://code.example.com/acme/roadmap#7",
+          comments: [
+            {
+              localNoteId: "note-1" as never,
+              body: "Close-gate summary",
+              createdAt: "2026-03-12T01:00:00.000Z",
+            },
+          ],
+        }),
+      ],
+      project
+    );
+
+    expect(firstPush.commentLinks).toEqual([
+      expect.objectContaining({ localNoteId: "note-1", externalCommentId: "1" }),
+    ]);
+    expect(pullAfterPush.comments).toEqual([]);
+    expect(secondPush.commentLinks).toEqual([
+      expect.objectContaining({ localNoteId: "note-1", externalCommentId: "1" }),
+    ]);
+    expect(issueClient.snapshotComments(target, 7)).toHaveLength(1);
+    expect(provider.getState().commentLinks).toEqual([
+      expect.objectContaining({ noteId: "note-1", forgejoCommentId: 1 }),
+    ]);
+  });
+
+  it("relinks existing todu-attributed remote comments when a local comment link is missing", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 7, [
+      {
+        id: 11,
+        issueNumber: 7,
+        body: formatAttributedBody(
+          formatToduAttribution("todu", "2026-03-12T01:00:00.000Z"),
+          "Close-gate summary"
+        ),
+        author: "erik",
+        createdAt: "2026-03-12T01:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore: createInMemoryForgejoBindingRuntimeStore(),
+    });
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await provider.pull(createBinding(), project);
+    const pushResult = await provider.push(
+      createBinding(),
+      [
+        createExportedTask({
+          localTaskId: createTaskId("task-1"),
+          externalId: "https://code.example.com/acme/roadmap#7",
+          comments: [
+            {
+              localNoteId: "note-1" as never,
+              body: "Close-gate summary",
+              createdAt: "2026-03-12T01:00:00.000Z",
+            },
+          ],
+        }),
+      ],
+      project
+    );
+
+    expect(pushResult.commentLinks).toEqual([
+      expect.objectContaining({ localNoteId: "note-1", externalCommentId: "11" }),
+    ]);
+    expect(issueClient.snapshotComments(target, 7)).toHaveLength(1);
+    expect(provider.getState().commentLinks).toEqual([
+      expect.objectContaining({ noteId: "note-1", forgejoCommentId: 11 }),
+    ]);
   });
 
   it("checks all linked issues for incremental comments", async () => {

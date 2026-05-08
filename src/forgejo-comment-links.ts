@@ -3,6 +3,8 @@ import path from "node:path";
 
 import type { IntegrationBinding, NoteId, Task } from "@todu/core";
 
+export type ForgejoCommentOrigin = "forgejo" | "todu";
+
 export interface ForgejoCommentLink {
   bindingId: IntegrationBinding["id"];
   taskId: Task["id"];
@@ -11,6 +13,7 @@ export interface ForgejoCommentLink {
   forgejoCommentId: number;
   lastMirroredAt: string;
   lastMirroredBody?: string;
+  origin?: ForgejoCommentOrigin;
 }
 
 export interface ForgejoCommentLinkStore {
