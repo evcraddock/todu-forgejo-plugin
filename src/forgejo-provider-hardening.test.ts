@@ -392,13 +392,7 @@ describe("provider error classification coverage", () => {
       project
     );
 
-    expect(pushResult.commentLinks).toEqual([
-      expect.objectContaining({
-        localNoteId: createNoteId("note-real"),
-        externalCommentId: "21",
-        externalTaskId: createTaskId("task-1"),
-      }),
-    ]);
+    expect(pushResult.commentLinks).toEqual([]);
     expect(
       commentLinkStore.getByNoteId(createBinding().id, createNoteId("note-real"))
     ).toMatchObject({

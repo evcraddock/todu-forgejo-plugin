@@ -13,12 +13,16 @@ import {
   type ForgejoComment,
   type ForgejoIssueClient,
 } from "@/forgejo-client";
-import type { ForgejoCommentLink, ForgejoCommentLinkStore } from "@/forgejo-comment-links";
+import type {
+  ForgejoCommentLink,
+  ForgejoCommentLinkStore,
+  ForgejoCommentOrigin,
+} from "@/forgejo-comment-links";
 import type { ForgejoItemLink, ForgejoItemLinkStore } from "@/forgejo-links";
 
 const FORGEJO_ATTRIBUTION_PREFIX = "_Synced from Forgejo comment by @";
 const TODU_ATTRIBUTION_PREFIX = "_Synced from todu comment by @";
-const ATTRIBUTION_SUFFIX_PATTERN = / on \d{4}-\d{2}-\d{2}T[\d:.]+Z_$/;
+const ATTRIBUTION_SUFFIX_PATTERN = / on \d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})_$/;
 const IMPORTED_COMMENT_LINK_PREFIX = "external:";
 const SYNC_EXTERNAL_ID_TAG_PREFIX = "sync:externalId:";
 const TODU_COMMENT_AUTHOR = "todu";
@@ -45,28 +49,38 @@ export function formatAttributedBody(attribution: string, body: string): string 
 }
 
 export function stripAttribution(body: string): string {
-  const lines = body.split("\n");
-  if (lines.length < 1) {
-    return body;
-  }
+  let stripped = body;
 
-  const firstLine = lines[0];
-  if (
-    (firstLine.startsWith(FORGEJO_ATTRIBUTION_PREFIX) ||
-      firstLine.startsWith(TODU_ATTRIBUTION_PREFIX)) &&
-    ATTRIBUTION_SUFFIX_PATTERN.test(firstLine)
-  ) {
+  while (true) {
+    const lines = stripped.split("\n");
+    const firstLine = lines[0];
+    if (!isAttributionLine(firstLine)) {
+      return stripped;
+    }
+
     const remaining = lines.slice(1).join("\n");
-    return remaining.startsWith("\n") ? remaining.slice(1) : remaining;
+    stripped = remaining.startsWith("\n") ? remaining.slice(1) : remaining;
   }
-
-  return body;
 }
 
 export function hasForgejoAttribution(body: string): boolean {
+  return hasAttributionPrefix(body, FORGEJO_ATTRIBUTION_PREFIX);
+}
+
+function hasToduAttribution(body: string): boolean {
+  return hasAttributionPrefix(body, TODU_ATTRIBUTION_PREFIX);
+}
+
+function hasAttributionPrefix(body: string, prefix: string): boolean {
   const firstLine = body.split("\n")[0];
+  return firstLine.startsWith(prefix) && ATTRIBUTION_SUFFIX_PATTERN.test(firstLine);
+}
+
+function isAttributionLine(line: string | undefined): boolean {
   return (
-    firstLine.startsWith(FORGEJO_ATTRIBUTION_PREFIX) && ATTRIBUTION_SUFFIX_PATTERN.test(firstLine)
+    line !== undefined &&
+    (line.startsWith(FORGEJO_ATTRIBUTION_PREFIX) || line.startsWith(TODU_ATTRIBUTION_PREFIX)) &&
+    ATTRIBUTION_SUFFIX_PATTERN.test(line)
   );
 }
 
@@ -81,6 +95,39 @@ function isLegacyImportedCommentLinkNoteId(noteId: NoteId): boolean {
 function getImportedForgejoSyncExternalId(note: Pick<ForgejoPushNote, "tags">): string | null {
   const syncTag = note.tags.find((tag) => tag.startsWith(SYNC_EXTERNAL_ID_TAG_PREFIX));
   return syncTag ? syncTag.slice(SYNC_EXTERNAL_ID_TAG_PREFIX.length) : null;
+}
+
+function getCommentLinkOrigin(link: ForgejoCommentLink): ForgejoCommentOrigin {
+  if (link.origin) {
+    return link.origin;
+  }
+
+  return isLegacyImportedCommentLinkNoteId(link.noteId) ? "forgejo" : "todu";
+}
+
+function inferReconciledCommentOrigin(input: {
+  canonicalLink: ForgejoCommentLink | null;
+  existingLink: ForgejoCommentLink | null;
+  note: ForgejoPushNote;
+}): ForgejoCommentOrigin {
+  if (input.canonicalLink) {
+    return getCommentLinkOrigin(input.canonicalLink);
+  }
+
+  if (input.existingLink) {
+    return getCommentLinkOrigin(input.existingLink);
+  }
+
+  return hasForgejoAttribution(input.note.content) ? "forgejo" : "todu";
+}
+
+function shouldSkipUnchangedImportedNote(note: ForgejoPushNote, link: ForgejoCommentLink): boolean {
+  const localBody = stripAttribution(note.content);
+  if (localBody !== link.lastMirroredBody) {
+    return false;
+  }
+
+  return getCommentLinkOrigin(link) === "forgejo" || hasForgejoAttribution(note.content);
 }
 
 export interface PullCommentsResult {
@@ -138,6 +185,25 @@ export async function pullComments(input: {
 
     for (const forgejoComment of forgejoComments) {
       const strippedBody = stripAttribution(forgejoComment.body);
+      const existingLink = input.commentLinkStore.getByForgejoCommentId(
+        input.binding.id,
+        forgejoComment.id
+      );
+
+      if (existingLink && getCommentLinkOrigin(existingLink) === "todu") {
+        input.commentLinkStore.save({
+          ...existingLink,
+          lastMirroredAt: forgejoComment.updatedAt ?? forgejoComment.createdAt,
+          lastMirroredBody: strippedBody,
+          origin: "todu",
+        });
+        continue;
+      }
+
+      if (!existingLink && hasToduAttribution(forgejoComment.body)) {
+        continue;
+      }
+
       const authorDisplayName = getForgejoActorDisplayName(forgejoComment.author);
       const normalizedAuthor = createForgejoActorRef(forgejoComment.author);
 
@@ -154,11 +220,6 @@ export async function pullComments(input: {
         raw: forgejoComment,
       });
 
-      const existingLink = input.commentLinkStore.getByForgejoCommentId(
-        input.binding.id,
-        forgejoComment.id
-      );
-
       if (!existingLink) {
         const newLink: ForgejoCommentLink = {
           bindingId: input.binding.id,
@@ -168,6 +229,7 @@ export async function pullComments(input: {
           forgejoCommentId: forgejoComment.id,
           lastMirroredAt: forgejoComment.updatedAt ?? forgejoComment.createdAt,
           lastMirroredBody: strippedBody,
+          origin: "forgejo",
         };
 
         input.commentLinkStore.save(newLink);
@@ -179,6 +241,7 @@ export async function pullComments(input: {
         ...existingLink,
         lastMirroredAt: forgejoComment.updatedAt ?? forgejoComment.createdAt,
         lastMirroredBody: strippedBody,
+        origin: getCommentLinkOrigin(existingLink),
       });
     }
   }
@@ -265,6 +328,10 @@ export async function pushComments(input: {
       }
 
       if (existingLink) {
+        if (shouldSkipUnchangedImportedNote(note, existingLink)) {
+          continue;
+        }
+
         const updated = await updateForgejoCommentIfNeeded(
           input,
           note,
@@ -275,6 +342,12 @@ export async function pushComments(input: {
           createPushCommentLink(note.id, itemLink.taskId, existingLink.forgejoCommentId, updated)
         );
       } else {
+        const matched = await linkExistingForgejoCommentForNote(input, note, itemLink);
+        if (matched) {
+          commentLinks.push(createPushCommentLink(note.id, itemLink.taskId, matched.id, matched));
+          continue;
+        }
+
         const created = await createForgejoCommentFromNote(input, note, itemLink, createdComments);
         commentLinks.push(createPushCommentLink(note.id, itemLink.taskId, created.id, created));
       }
@@ -329,6 +402,7 @@ function resolveCommentLinkForPush(input: {
       canonicalLink?.lastMirroredBody ??
       existingLink?.lastMirroredBody ??
       stripAttribution(input.note.content),
+    origin: inferReconciledCommentOrigin({ canonicalLink, existingLink, note: input.note }),
   };
 
   if (existingLink && existingLink.forgejoCommentId !== forgejoCommentId) {
@@ -370,6 +444,7 @@ function reconcileLegacyCommentLinks(
       ...existingLink,
       taskId: itemLink.taskId,
       noteId: resolvedNoteId,
+      origin: getCommentLinkOrigin(existingLink),
     });
   }
 }
@@ -446,9 +521,53 @@ async function updateForgejoCommentIfNeeded(
     ...existingLink,
     lastMirroredAt: updatedComment.updatedAt ?? updatedComment.createdAt,
     lastMirroredBody: localBody,
+    origin: getCommentLinkOrigin(existingLink),
   });
 
   return updatedComment;
+}
+
+async function linkExistingForgejoCommentForNote(
+  input: {
+    binding: IntegrationBinding;
+    issueClient: ForgejoIssueClient;
+    target: {
+      baseUrl: string;
+      apiBaseUrl: string;
+      owner: string;
+      repo: string;
+    };
+    commentLinkStore: ForgejoCommentLinkStore;
+  },
+  note: ForgejoPushNote,
+  itemLink: ForgejoItemLink
+): Promise<ForgejoComment | null> {
+  const localBody = stripAttribution(note.content);
+  const forgejoComments = await input.issueClient.listComments(input.target, itemLink.issueNumber);
+  const matchingComments = forgejoComments.filter(
+    (comment) =>
+      hasToduAttribution(comment.body) &&
+      stripAttribution(comment.body) === localBody &&
+      !input.commentLinkStore.getByForgejoCommentId(input.binding.id, comment.id)
+  );
+
+  if (matchingComments.length === 0) {
+    return null;
+  }
+
+  const matchedComment = matchingComments.sort((left, right) => left.id - right.id)[0];
+  input.commentLinkStore.save({
+    bindingId: input.binding.id,
+    taskId: itemLink.taskId,
+    noteId: note.id,
+    issueNumber: itemLink.issueNumber,
+    forgejoCommentId: matchedComment.id,
+    lastMirroredAt: matchedComment.updatedAt ?? matchedComment.createdAt,
+    lastMirroredBody: localBody,
+    origin: "todu",
+  });
+
+  return matchedComment;
 }
 
 async function createForgejoCommentFromNote(
@@ -489,6 +608,7 @@ async function createForgejoCommentFromNote(
     forgejoCommentId: createdComment.id,
     lastMirroredAt: createdComment.updatedAt ?? createdComment.createdAt,
     lastMirroredBody: localBody,
+    origin: "todu",
   });
 
   return createdComment;
