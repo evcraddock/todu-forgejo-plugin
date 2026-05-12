@@ -499,7 +499,7 @@ describe("forgejo provider runtime integration", () => {
     ]);
   });
 
-  it("checks all linked issues for incremental comments", async () => {
+  it("only checks touched linked issues for incremental comments", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
       {
@@ -593,10 +593,60 @@ describe("forgejo provider runtime integration", () => {
 
     await provider.pull(createBinding(), project);
 
-    expect(listCommentsCalls).toEqual([
-      { issueNumber: 7, since: expect.any(String) },
-      { issueNumber: 8, since: expect.any(String) },
+    expect(listCommentsCalls).toEqual([{ issueNumber: 7, since: expect.any(String) }]);
+  });
+
+  it("skips comment fetches when no issues are touched by the current pull", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
     ]);
+    issueClient.seedComments(target, 7, [
+      {
+        id: 11,
+        issueNumber: 7,
+        body: "Comment seven",
+        author: "alice",
+        createdAt: "2026-03-12T01:30:00.000Z",
+        updatedAt: "2026-03-12T01:30:00.000Z",
+      },
+    ]);
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await provider.pull(createBinding(), project);
+
+    const listCommentsCalls: number[] = [];
+    issueClient.listComments = async (_bindingTarget, issueNumber) => {
+      listCommentsCalls.push(issueNumber);
+      throw new Error("comments should not be fetched when no issues are touched");
+    };
+
+    const result = await provider.pull(createBinding(), project);
+
+    expect(result.comments).toEqual([]);
+    expect(listCommentsCalls).toEqual([]);
   });
 
   it("records failure in runtime store when pull throws", async () => {
