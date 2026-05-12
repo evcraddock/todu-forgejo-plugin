@@ -17,7 +17,10 @@ import { createForgejoSyncLogger } from "@/forgejo-logger";
 import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
 import { createForgejoLoopPreventionStore } from "@/forgejo-loop-prevention";
 import { classifyForgejoSyncError, createForgejoSyncProvider } from "@/forgejo-provider";
-import { createInMemoryForgejoBindingRuntimeStore } from "@/forgejo-runtime";
+import {
+  createInitialForgejoRuntimeState,
+  createInMemoryForgejoBindingRuntimeStore,
+} from "@/forgejo-runtime";
 
 function createBinding(overrides: Partial<IntegrationBinding> = {}): IntegrationBinding {
   return {
@@ -676,6 +679,112 @@ describe("forgejo provider runtime integration", () => {
     expect(state!.retryAttempt).toBe(1);
     expect(state!.lastError).toContain("rate limited");
     expect(state!.nextRetryAt).not.toBeNull();
+  });
+
+  it("advances safe pull progress and retries pending comments after a comment failure", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven updated",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:01:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 7, [
+      {
+        id: 11,
+        issueNumber: 7,
+        body: "Comment seven",
+        author: "alice",
+        createdAt: "2026-03-12T00:01:30.000Z",
+        updatedAt: "2026-03-12T00:01:30.000Z",
+      },
+    ]);
+
+    const binding = createBinding();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    linkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-7"),
+      issueNumber: 7,
+      externalId: "https://code.example.com/acme/roadmap#7",
+      lastMirroredAt: "2026-03-12T00:00:00.000Z",
+    });
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    runtimeStore.save({
+      ...createInitialForgejoRuntimeState(binding.id),
+      cursor: "2026-03-12T00:00:00.000Z",
+      lastSuccessAt: "2026-03-12T00:00:00.000Z",
+    });
+
+    const listIssueSinceValues: Array<string | undefined> = [];
+    const originalListIssues = issueClient.listIssues.bind(issueClient);
+    issueClient.listIssues = async (bindingTarget, options) => {
+      listIssueSinceValues.push(options?.since);
+      return originalListIssues(bindingTarget, options);
+    };
+
+    const listCommentsCalls: number[] = [];
+    const originalListComments = issueClient.listComments.bind(issueClient);
+    let failComments = true;
+    issueClient.listComments = async (bindingTarget, issueNumber, options) => {
+      listCommentsCalls.push(issueNumber);
+      if (failComments) {
+        throw new Error("Forgejo API GET /comments failed: 500 unavailable");
+      }
+
+      return originalListComments(bindingTarget, issueNumber, options);
+    };
+
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore,
+      runtimeStore,
+      retryConfig: { initialSeconds: 0, maxSeconds: 0 },
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    await expect(provider.pull(binding, project)).rejects.toThrow("500 unavailable");
+
+    const failedState = runtimeStore.get(binding.id);
+    expect(failedState).toMatchObject({
+      lastFailurePhase: "pull:comments",
+      pendingCommentIssueNumbers: [7],
+    });
+    expect(failedState?.cursor).not.toBe("2026-03-12T00:00:00.000Z");
+    expect(Date.parse(failedState!.cursor!)).toBeGreaterThan(
+      Date.parse("2026-03-12T00:01:00.000Z")
+    );
+
+    failComments = false;
+    const retryResult = await provider.pull(binding, project);
+
+    expect(listIssueSinceValues.at(-1)).toBe(failedState?.cursor);
+    expect(retryResult.tasks).toEqual([]);
+    expect(retryResult.comments).toHaveLength(1);
+    expect(runtimeStore.get(binding.id)).toMatchObject({
+      lastError: null,
+      lastFailurePhase: null,
+      pendingCommentIssueNumbers: [],
+    });
+
+    const commentCallsAfterRetry = listCommentsCalls.length;
+    const finalResult = await provider.pull(binding, project);
+
+    expect(finalResult.comments).toEqual([]);
+    expect(listCommentsCalls).toHaveLength(commentCallsAfterRetry);
   });
 
   it("skips pull when retry backoff has not elapsed", async () => {

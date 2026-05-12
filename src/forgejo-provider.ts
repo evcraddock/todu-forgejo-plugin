@@ -77,6 +77,7 @@ import {
   type ForgejoBindingRuntimeState,
   type ForgejoBindingRuntimeStore,
   type ForgejoRetryConfig,
+  type ForgejoRuntimeFailureProgress,
 } from "@/forgejo-runtime";
 
 export const FORGEJO_PROVIDER_VERSION = "0.1.0";
@@ -292,8 +293,10 @@ export function createForgejoSyncProvider(
       );
       logger.info("pull started", logContext);
 
+      let failureProgress: ForgejoRuntimeFailureProgress | undefined;
       try {
         loopPreventionStore.clearExpired(DEFAULT_LOOP_PREVENTION_MAX_AGE_MS);
+        const pendingCommentIssueNumbers = runtimeState.pendingCommentIssueNumbers ?? [];
 
         lastPullResult = await bootstrapForgejoIssuesToTasks({
           binding,
@@ -309,8 +312,21 @@ export function createForgejoSyncProvider(
           importClosedOnBootstrap: getImportClosedOnBootstrap(binding),
         });
 
+        const touchedIssueNumbers = [
+          ...new Set([...pendingCommentIssueNumbers, ...lastPullResult.touchedIssueNumbers]),
+        ];
+        const progressCursor = new Date().toISOString();
+        if (touchedIssueNumbers.length > 0) {
+          failureProgress = {
+            phase: "pull:comments",
+            cursor: progressCursor,
+            progressAt: progressCursor,
+            pendingCommentIssueNumbers: touchedIssueNumbers,
+          };
+        }
+
         const pullCommentsResult =
-          lastPullResult.touchedIssueNumbers.length === 0
+          touchedIssueNumbers.length === 0
             ? { comments: [], createdLinks: [] }
             : await pullComments({
                 binding,
@@ -318,7 +334,7 @@ export function createForgejoSyncProvider(
                 target,
                 itemLinkStore: linkStore,
                 commentLinkStore,
-                issueNumbers: lastPullResult.touchedIssueNumbers,
+                issueNumbers: touchedIssueNumbers,
                 since: runtimeState.lastSuccessAt ?? undefined,
                 onIssueError: ({ itemLink, error }) => {
                   const classification = classifyForgejoSyncError(error);
@@ -361,6 +377,7 @@ export function createForgejoSyncProvider(
           classification,
           logContext,
           direction: "pull",
+          progress: failureProgress,
         });
         throw error;
       }
@@ -398,6 +415,7 @@ export function createForgejoSyncProvider(
       );
       logger.info("push started", logContext);
 
+      let failureProgress: ForgejoRuntimeFailureProgress | undefined;
       try {
         loopPreventionStore.clearExpired(DEFAULT_LOOP_PREVENTION_MAX_AGE_MS);
 
@@ -446,6 +464,11 @@ export function createForgejoSyncProvider(
             closedIssue.updatedAt ?? new Date().toISOString()
           );
         }
+
+        failureProgress = {
+          phase: "push:comments",
+          progressAt: new Date().toISOString(),
+        };
 
         const pushCommentsResult = await pushComments({
           binding,
@@ -513,6 +536,7 @@ export function createForgejoSyncProvider(
           classification,
           logContext,
           direction: "push",
+          progress: failureProgress,
         });
         throw error;
       }
@@ -539,12 +563,21 @@ export function createForgejoSyncProvider(
     classification: ForgejoSyncErrorClassification;
     logContext: ForgejoSyncLogContext;
     direction: "pull" | "push";
+    progress?: ForgejoRuntimeFailureProgress;
   }): void {
     const { classification, runtimeState, bindingId, logContext } = input;
     const status = getOrCreateBindingStatus(bindingId);
 
     if (classification.retryable) {
-      runtimeStore.save(recordForgejoFailure(runtimeState, classification.summary, retryConfig));
+      runtimeStore.save(
+        recordForgejoFailure(
+          runtimeState,
+          classification.summary,
+          retryConfig,
+          new Date(),
+          input.progress
+        )
+      );
       bindingStatuses.set(
         bindingId,
         updateForgejoBindingStatusError(status, classification.summary)
@@ -553,7 +586,15 @@ export function createForgejoSyncProvider(
       return;
     }
 
-    runtimeStore.save(recordForgejoBlocked(runtimeState, classification.summary));
+    runtimeStore.save(
+      recordForgejoBlocked(
+        runtimeState,
+        classification.summary,
+        undefined,
+        new Date(),
+        input.progress
+      )
+    );
     bindingStatuses.set(
       bindingId,
       updateForgejoBindingStatusBlocked(status, classification.summary)

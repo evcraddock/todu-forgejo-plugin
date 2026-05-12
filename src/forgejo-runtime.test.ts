@@ -30,6 +30,8 @@ describe("forgejo runtime", () => {
     expect(failed.retryAttempt).toBe(1);
     expect(failed.nextRetryAt).toBe("2026-03-12T00:00:05.000Z");
     expect(failed.lastError).toBe("rate limited");
+    expect(failed.lastFailurePhase).toBeNull();
+    expect(failed.pendingCommentIssueNumbers).toEqual([]);
 
     const succeeded = recordForgejoSuccess(
       failed,
@@ -41,6 +43,31 @@ describe("forgejo runtime", () => {
     expect(succeeded.nextRetryAt).toBeNull();
     expect(succeeded.lastError).toBeNull();
     expect(succeeded.cursor).toBe("2026-03-12T00:01:00.000Z");
+    expect(succeeded.lastFailurePhase).toBeNull();
+    expect(succeeded.pendingCommentIssueNumbers).toEqual([]);
+  });
+
+  it("records partial progress details on failure", () => {
+    const bindingId = createIntegrationBindingId("binding-1");
+    const initial = createInitialForgejoRuntimeState(bindingId);
+    const failed = recordForgejoFailure(
+      initial,
+      "comment pull failed",
+      { initialSeconds: 5, maxSeconds: 300 },
+      new Date("2026-03-12T00:00:00.000Z"),
+      {
+        phase: "pull:comments",
+        cursor: "2026-03-12T00:01:00.000Z",
+        progressAt: "2026-03-12T00:01:00.000Z",
+        pendingCommentIssueNumbers: [7, 7, 8],
+      }
+    );
+
+    expect(failed.cursor).toBe("2026-03-12T00:01:00.000Z");
+    expect(failed.lastProgressAt).toBe("2026-03-12T00:01:00.000Z");
+    expect(failed.lastFailurePhase).toBe("pull:comments");
+    expect(failed.lastFailureCursor).toBe("2026-03-12T00:01:00.000Z");
+    expect(failed.pendingCommentIssueNumbers).toEqual([7, 8]);
   });
 
   it("checks retry eligibility against nextRetryAt", () => {
