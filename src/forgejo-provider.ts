@@ -309,32 +309,36 @@ export function createForgejoSyncProvider(
           importClosedOnBootstrap: getImportClosedOnBootstrap(binding),
         });
 
-        const pullCommentsResult = await pullComments({
-          binding,
-          issueClient,
-          target,
-          itemLinkStore: linkStore,
-          commentLinkStore,
-          since: runtimeState.lastSuccessAt ?? undefined,
-          onIssueError: ({ itemLink, error }) => {
-            const classification = classifyForgejoSyncError(error);
-            if (classification.kind !== "not-found") {
-              return "throw";
-            }
+        const pullCommentsResult =
+          lastPullResult.touchedIssueNumbers.length === 0
+            ? { comments: [], createdLinks: [] }
+            : await pullComments({
+                binding,
+                issueClient,
+                target,
+                itemLinkStore: linkStore,
+                commentLinkStore,
+                issueNumbers: lastPullResult.touchedIssueNumbers,
+                since: runtimeState.lastSuccessAt ?? undefined,
+                onIssueError: ({ itemLink, error }) => {
+                  const classification = classifyForgejoSyncError(error);
+                  if (classification.kind !== "not-found") {
+                    return "throw";
+                  }
 
-            clearStaleIssueReferences({
-              bindingId: binding.id,
-              issueNumber: itemLink.issueNumber,
-              taskId: itemLink.taskId,
-            });
-            logger.warn("skipping comments for missing remote issue; stale links removed", {
-              ...logContext,
-              entityType: "issue",
-              itemId: String(itemLink.issueNumber),
-            });
-            return "continue";
-          },
-        });
+                  clearStaleIssueReferences({
+                    bindingId: binding.id,
+                    issueNumber: itemLink.issueNumber,
+                    taskId: itemLink.taskId,
+                  });
+                  logger.warn("skipping comments for missing remote issue; stale links removed", {
+                    ...logContext,
+                    entityType: "issue",
+                    itemId: String(itemLink.issueNumber),
+                  });
+                  return "continue";
+                },
+              });
 
         const cursor = new Date().toISOString();
         runtimeStore.save(recordForgejoSuccess(runtimeState, cursor));
