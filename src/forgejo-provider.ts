@@ -18,6 +18,7 @@ import {
 } from "@/forgejo-binding";
 import {
   createForgejoBindingStatus,
+  recoverStaleForgejoBindingStatusRunning,
   updateForgejoBindingStatusBlocked,
   updateForgejoBindingStatusError,
   updateForgejoBindingStatusIdle,
@@ -217,10 +218,26 @@ export function createForgejoSyncProvider(
     return parseForgejoBinding(binding);
   };
 
+  const recoverStaleRunningStatuses = (): void => {
+    for (const [bindingId, status] of bindingStatuses.entries()) {
+      const recovered = recoverStaleForgejoBindingStatusRunning(status);
+      if (recovered !== status) {
+        bindingStatuses.set(bindingId, recovered);
+        logger.warn("cleared stale Forgejo binding running state", {
+          bindingId,
+          projectId: "unknown",
+          repo: "unknown",
+          direction: "pull",
+        });
+      }
+    }
+  };
+
   return {
     name: FORGEJO_PROVIDER_NAME,
     version: FORGEJO_PROVIDER_VERSION,
     async initialize(config: SyncProviderConfig): Promise<void> {
+      recoverStaleRunningStatuses();
       settings = loadForgejoProviderSettings(config);
       if (!options.issueClient) {
         issueClient = createHttpForgejoIssueClient(settings.token, {
@@ -250,6 +267,7 @@ export function createForgejoSyncProvider(
       }
     },
     async shutdown(): Promise<void> {
+      recoverStaleRunningStatuses();
       settings = null;
       lastPullResult = null;
       lastPushResult = null;

@@ -81,3 +81,20 @@ export function updateForgejoBindingStatusBlocked(
     updatedAt: now.toISOString(),
   };
 }
+
+export function recoverStaleForgejoBindingStatusRunning(
+  status: ForgejoBindingStatus,
+  reason = "stale running state cleared during Forgejo provider recovery",
+  now: Date = new Date()
+): ForgejoBindingStatus {
+  if (status.state !== "running") {
+    return status;
+  }
+
+  return {
+    ...status,
+    state: "error",
+    lastErrorSummary: reason,
+    updatedAt: now.toISOString(),
+  };
+}
