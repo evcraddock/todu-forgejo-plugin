@@ -1032,6 +1032,46 @@ describe("forgejo provider runtime integration", () => {
     expect(updateCallCount).toBe(1);
   });
 
+  it("clears stale running binding status during provider recovery", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.listIssues = async () => new Promise(() => undefined);
+
+    const logger = createForgejoSyncLogger();
+    const provider = createForgejoSyncProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      logger,
+    });
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    void provider.pull(createBinding(), project);
+    await Promise.resolve();
+
+    expect(provider.getState().bindingStatuses.get(createBinding().id)?.state).toBe("running");
+
+    await provider.initialize({
+      settings: {
+        baseUrl: target.baseUrl,
+        token: "secret-token",
+      },
+    });
+
+    const status = provider.getState().bindingStatuses.get(createBinding().id);
+    expect(status).toMatchObject({
+      state: "error",
+      lastErrorSummary: "stale running state cleared during Forgejo provider recovery",
+    });
+    expect(logger.getEntries().at(-1)).toMatchObject({
+      message: "cleared stale Forgejo binding running state",
+    });
+  });
+
   it("updates binding status through running to idle on success", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
