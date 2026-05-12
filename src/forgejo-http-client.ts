@@ -48,6 +48,10 @@ interface ForgejoApiComment {
   updated_at: string;
 }
 
+interface ListAllPagesOptions<T> {
+  itemKey?: (item: T) => number | string;
+}
+
 function normalizeLabels(labels: ForgejoApiIssue["labels"]): string[] {
   return labels.map((label) => (typeof label === "string" ? label : label.name));
 }
@@ -125,7 +129,8 @@ export function createHttpForgejoIssueClient(
 
     const rawLabels = await listAllPages<ForgejoApiLabel>(
       target,
-      `/repos/${target.owner}/${target.repo}/labels`
+      `/repos/${target.owner}/${target.repo}/labels`,
+      { itemKey: (label) => label.id }
     );
 
     const mapping = new Map<string, number>();
@@ -194,8 +199,14 @@ export function createHttpForgejoIssueClient(
     return (await response.json()) as T;
   };
 
-  const listAllPages = async <T>(target: ForgejoRepositoryTarget, path: string): Promise<T[]> => {
+  const listAllPages = async <T>(
+    target: ForgejoRepositoryTarget,
+    path: string,
+    options: ListAllPagesOptions<T> = {}
+  ): Promise<T[]> => {
     const results: T[] = [];
+    const seenItemKeys = new Set<string>();
+    const seenPageSignatures = new Set<string>();
     let page = 1;
     const limit = 100;
 
@@ -206,9 +217,35 @@ export function createHttpForgejoIssueClient(
         "GET",
         `${path}${separator}limit=${limit}&page=${page}`
       );
-      results.push(...items);
+      const itemKey = options.itemKey;
+      const pageSignature = itemKey
+        ? items.map((item) => String(itemKey(item))).join("\0")
+        : JSON.stringify(items);
 
-      if (items.length < limit) {
+      if (seenPageSignatures.has(pageSignature)) {
+        break;
+      }
+      seenPageSignatures.add(pageSignature);
+
+      let addedCount = 0;
+      for (const item of items) {
+        if (!itemKey) {
+          results.push(item);
+          addedCount += 1;
+          continue;
+        }
+
+        const key = String(itemKey(item));
+        if (seenItemKeys.has(key)) {
+          continue;
+        }
+
+        seenItemKeys.add(key);
+        results.push(item);
+        addedCount += 1;
+      }
+
+      if (items.length < limit || (itemKey && items.length > 0 && addedCount === 0)) {
         break;
       }
 
@@ -228,7 +265,9 @@ export function createHttpForgejoIssueClient(
         path += `&since=${encodeURIComponent(options.since)}`;
       }
 
-      const rawIssues = await listAllPages<ForgejoApiIssue>(target, path);
+      const rawIssues = await listAllPages<ForgejoApiIssue>(target, path, {
+        itemKey: (issue) => issue.number,
+      });
       return rawIssues.map((rawIssue) => mapApiIssue(target, rawIssue));
     },
 
@@ -306,7 +345,8 @@ export function createHttpForgejoIssueClient(
     async listLabels(target: ForgejoRepositoryTarget): Promise<string[]> {
       const rawLabels = await listAllPages<ForgejoApiLabel>(
         target,
-        `/repos/${target.owner}/${target.repo}/labels`
+        `/repos/${target.owner}/${target.repo}/labels`,
+        { itemKey: (label) => label.id }
       );
       return rawLabels.map((label) => label.name);
     },
@@ -334,7 +374,9 @@ export function createHttpForgejoIssueClient(
         path += `?since=${encodeURIComponent(options.since)}`;
       }
 
-      const rawComments = await listAllPages<ForgejoApiComment>(target, path);
+      const rawComments = await listAllPages<ForgejoApiComment>(target, path, {
+        itemKey: (comment) => comment.id,
+      });
       return rawComments.map((rawComment) => mapApiComment(target, issueNumber, rawComment));
     },
 
