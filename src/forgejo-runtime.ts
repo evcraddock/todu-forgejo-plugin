@@ -3,6 +3,12 @@ import path from "node:path";
 
 import type { IntegrationBinding } from "@todu/core";
 
+export type ForgejoRuntimeFailurePhase =
+  | "pull:issues"
+  | "pull:comments"
+  | "push:issues"
+  | "push:comments";
+
 export interface ForgejoBindingRuntimeState {
   bindingId: IntegrationBinding["id"];
   cursor: string | null;
@@ -11,6 +17,17 @@ export interface ForgejoBindingRuntimeState {
   lastError: string | null;
   lastSuccessAt: string | null;
   lastAttemptAt: string | null;
+  lastProgressAt: string | null;
+  lastFailurePhase: ForgejoRuntimeFailurePhase | null;
+  lastFailureCursor: string | null;
+  pendingCommentIssueNumbers: number[];
+}
+
+export interface ForgejoRuntimeFailureProgress {
+  phase: ForgejoRuntimeFailurePhase;
+  cursor?: string | null;
+  progressAt?: string | null;
+  pendingCommentIssueNumbers?: number[];
 }
 
 export interface ForgejoBindingRuntimeStore {
@@ -46,6 +63,10 @@ export function createInitialForgejoRuntimeState(
     lastError: null,
     lastSuccessAt: null,
     lastAttemptAt: null,
+    lastProgressAt: null,
+    lastFailurePhase: null,
+    lastFailureCursor: null,
+    pendingCommentIssueNumbers: [],
   };
 }
 
@@ -73,6 +94,10 @@ export function recordForgejoSuccess(
     lastError: null,
     lastSuccessAt: now.toISOString(),
     lastAttemptAt: now.toISOString(),
+    lastProgressAt: now.toISOString(),
+    lastFailurePhase: null,
+    lastFailureCursor: null,
+    pendingCommentIssueNumbers: [],
   };
 }
 
@@ -80,18 +105,27 @@ export function recordForgejoFailure(
   state: ForgejoBindingRuntimeState,
   error: string,
   config: ForgejoRetryConfig = DEFAULT_RETRY_CONFIG,
-  now: Date = new Date()
+  now: Date = new Date(),
+  progress?: ForgejoRuntimeFailureProgress
 ): ForgejoBindingRuntimeState {
   const nextAttempt = state.retryAttempt + 1;
   const delaySeconds = computeNextForgejoRetryDelay(nextAttempt, config);
   const nextRetryAt = new Date(now.getTime() + delaySeconds * 1000);
+  const cursor = progress && "cursor" in progress ? (progress.cursor ?? null) : state.cursor;
+  const pendingCommentIssueNumbers =
+    progress?.pendingCommentIssueNumbers ?? state.pendingCommentIssueNumbers ?? [];
 
   return {
     ...state,
+    cursor,
     retryAttempt: nextAttempt,
     nextRetryAt: nextRetryAt.toISOString(),
     lastError: error,
     lastAttemptAt: now.toISOString(),
+    lastProgressAt: progress?.progressAt ?? state.lastProgressAt ?? null,
+    lastFailurePhase: progress?.phase ?? null,
+    lastFailureCursor: progress ? cursor : state.cursor,
+    pendingCommentIssueNumbers: [...new Set(pendingCommentIssueNumbers)],
   };
 }
 
@@ -99,9 +133,10 @@ export function recordForgejoBlocked(
   state: ForgejoBindingRuntimeState,
   error: string,
   config: ForgejoRetryConfig = DEFAULT_BLOCKED_RETRY_CONFIG,
-  now: Date = new Date()
+  now: Date = new Date(),
+  progress?: ForgejoRuntimeFailureProgress
 ): ForgejoBindingRuntimeState {
-  return recordForgejoFailure(state, error, config, now);
+  return recordForgejoFailure(state, error, config, now, progress);
 }
 
 export function shouldForgejoRetry(
@@ -167,7 +202,17 @@ export function createFileForgejoBindingRuntimeStore(
         throw new Error(`Invalid Forgejo runtime store at ${storagePath}: invalid state record`);
       }
 
-      return entry as ForgejoBindingRuntimeState;
+      const state = entry as Partial<ForgejoBindingRuntimeState> & {
+        bindingId: IntegrationBinding["id"];
+      };
+
+      return {
+        ...state,
+        lastProgressAt: state.lastProgressAt ?? null,
+        lastFailurePhase: state.lastFailurePhase ?? null,
+        lastFailureCursor: state.lastFailureCursor ?? null,
+        pendingCommentIssueNumbers: state.pendingCommentIssueNumbers ?? [],
+      } as ForgejoBindingRuntimeState;
     });
   };
 

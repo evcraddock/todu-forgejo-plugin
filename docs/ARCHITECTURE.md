@@ -505,6 +505,10 @@ Comments no longer remain the exception. Mirrored comment deletes do not propaga
 - interval configurable in plugin config
 - each binding keeps independent cursor and retry state
 
+### Cursor and failure checkpoint semantics
+
+The runtime `cursor` is the provider's safe remote-read checkpoint. A fully successful pull or push records a new cursor, clears retry state, and clears any pending comment issue list. If a pull finishes issue discovery/link updates but fails while reading comments, the provider records a partial-progress checkpoint with `lastFailurePhase = pull:comments`, advances `cursor` to that safe issue checkpoint, and stores `pendingCommentIssueNumbers` for the touched issues whose comments still need retry. The next retry lists issues from the advanced cursor while still fetching comments for the pending issues using the previous successful comment checkpoint, so old issue updates are not reprocessed indefinitely and missed comments are not silently skipped. If a failure happens before a safe checkpoint is known, the cursor does not advance. Runtime diagnostics (`lastError`, `lastProgressAt`, `lastFailurePhase`, `lastFailureCursor`, and `pendingCommentIssueNumbers`) explain why a cursor did or did not move.
+
 ## Retry
 
 Reuse the GitHub plugin's per-binding exponential backoff model:
