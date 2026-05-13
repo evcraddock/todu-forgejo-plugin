@@ -71,6 +71,10 @@ function hasToduAttribution(body: string): boolean {
   return hasAttributionPrefix(body, TODU_ATTRIBUTION_PREFIX);
 }
 
+function hasAnyAttribution(body: string): boolean {
+  return isAttributionLine(body.split("\n")[0]);
+}
+
 function hasAttributionPrefix(body: string, prefix: string): boolean {
   const firstLine = body.split("\n")[0];
   return firstLine.startsWith(prefix) && ATTRIBUTION_SUFFIX_PATTERN.test(firstLine);
@@ -546,7 +550,7 @@ async function linkExistingForgejoCommentForNote(
   const forgejoComments = await input.issueClient.listComments(input.target, itemLink.issueNumber);
   const matchingComments = forgejoComments.filter(
     (comment) =>
-      hasToduAttribution(comment.body) &&
+      hasAnyAttribution(comment.body) &&
       stripAttribution(comment.body) === localBody &&
       !input.commentLinkStore.getByForgejoCommentId(input.binding.id, comment.id)
   );

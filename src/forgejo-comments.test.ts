@@ -269,6 +269,102 @@ describe("forgejo comments", () => {
     });
   });
 
+  it("links restarted local notes to nested attributed forgejo comments instead of creating duplicates", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const itemLinkStore = createInMemoryForgejoItemLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+        title: "Issue",
+        state: "open",
+        labels: [],
+        assigneeActorIds: [],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 7, [
+      {
+        id: 21,
+        issueNumber: 7,
+        body: formatAttributedBody(
+          formatForgejoAttribution("alice", "2026-03-12T01:05:00.000Z"),
+          formatAttributedBody(
+            formatToduAttribution("todu", "2026-03-12T01:00:00.000Z"),
+            "Close-gate summary"
+          )
+        ),
+        author: "erik",
+        createdAt: "2026-03-12T01:00:00.000Z",
+        updatedAt: "2026-03-12T01:05:00.000Z",
+      },
+    ]);
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-1"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+      })
+    );
+
+    const pushInput = {
+      binding,
+      issueClient,
+      target,
+      tasks: [
+        createTask([
+          {
+            localNoteId: createNoteId("note-local"),
+            body: "Close-gate summary",
+            createdAt: "2026-03-12T01:00:00.000Z",
+          },
+        ]),
+      ],
+      itemLinkStore,
+    };
+
+    const firstCommentLinkStore = createInMemoryForgejoCommentLinkStore();
+    const firstResult = await pushComments({
+      ...pushInput,
+      commentLinkStore: firstCommentLinkStore,
+    });
+
+    expect(firstResult.createdComments).toEqual([]);
+    expect(firstResult.commentLinks).toEqual([
+      expect.objectContaining({
+        localNoteId: createNoteId("note-local"),
+        externalCommentId: "21",
+      }),
+    ]);
+    expect(firstCommentLinkStore.getByNoteId(binding.id, createNoteId("note-local"))).toMatchObject(
+      {
+        forgejoCommentId: 21,
+        lastMirroredBody: "Close-gate summary",
+      }
+    );
+
+    const restartedCommentLinkStore = createInMemoryForgejoCommentLinkStore();
+    const retryResult = await pushComments({
+      ...pushInput,
+      commentLinkStore: restartedCommentLinkStore,
+    });
+
+    expect(retryResult.createdComments).toEqual([]);
+    expect(retryResult.commentLinks).toEqual([
+      expect.objectContaining({
+        localNoteId: createNoteId("note-local"),
+        externalCommentId: "21",
+      }),
+    ]);
+    expect(issueClient.snapshotComments(target, 7)).toHaveLength(1);
+  });
+
   it("keeps durable links when forgejo comments are deleted remotely", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const itemLinkStore = createInMemoryForgejoItemLinkStore();
