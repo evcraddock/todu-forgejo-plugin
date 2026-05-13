@@ -50,7 +50,13 @@ interface ForgejoApiComment {
 
 interface ListAllPagesOptions<T> {
   itemKey?: (item: T) => number | string;
+  maxItems?: number;
+  maxPages?: number;
 }
+
+const PAGE_LIMIT = 100;
+const DEFAULT_MAX_PAGES = 1_000;
+const DEFAULT_MAX_ITEMS = 10_000;
 
 function normalizeLabels(labels: ForgejoApiIssue["labels"]): string[] {
   return labels.map((label) => (typeof label === "string" ? label : label.name));
@@ -208,9 +214,15 @@ export function createHttpForgejoIssueClient(
     const seenItemKeys = new Set<string>();
     const seenPageSignatures = new Set<string>();
     let page = 1;
-    const limit = 100;
+    const limit = PAGE_LIMIT;
+    const maxPages = options.maxPages ?? DEFAULT_MAX_PAGES;
+    const maxItems = options.maxItems ?? DEFAULT_MAX_ITEMS;
 
     for (;;) {
+      if (page > maxPages) {
+        throw new Error(`Forgejo pagination exceeded ${maxPages} pages for ${path}`);
+      }
+
       const separator = path.includes("?") ? "&" : "?";
       const items = await request<T[]>(
         target,
@@ -232,6 +244,9 @@ export function createHttpForgejoIssueClient(
         if (!itemKey) {
           results.push(item);
           addedCount += 1;
+          if (results.length > maxItems) {
+            throw new Error(`Forgejo pagination exceeded ${maxItems} items for ${path}`);
+          }
           continue;
         }
 
@@ -243,6 +258,10 @@ export function createHttpForgejoIssueClient(
         seenItemKeys.add(key);
         results.push(item);
         addedCount += 1;
+
+        if (results.length > maxItems) {
+          throw new Error(`Forgejo pagination exceeded ${maxItems} items for ${path}`);
+        }
       }
 
       if (items.length < limit || (itemKey && items.length > 0 && addedCount === 0)) {
@@ -376,6 +395,7 @@ export function createHttpForgejoIssueClient(
 
       const rawComments = await listAllPages<ForgejoApiComment>(target, path, {
         itemKey: (comment) => comment.id,
+        maxItems: 5_000,
       });
       return rawComments.map((rawComment) => mapApiComment(target, issueNumber, rawComment));
     },

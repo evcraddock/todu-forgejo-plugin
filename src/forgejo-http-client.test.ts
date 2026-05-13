@@ -101,6 +101,22 @@ describe("forgejo http client", () => {
     expect(requests).toHaveLength(2);
   });
 
+  it("fails safely when comment pagination exceeds bounded item processing", async () => {
+    let nextId = 1;
+    const requests: string[] = [];
+    const fetchImpl: typeof fetch = async (url) => {
+      requests.push(String(url));
+      return createJsonResponse(Array.from({ length: 100 }, () => createApiComment(nextId++)));
+    };
+
+    const client = createHttpForgejoIssueClient("token", { fetchImpl });
+
+    await expect(client.listComments(target, 45)).rejects.toThrow(
+      "Forgejo pagination exceeded 5000 items"
+    );
+    expect(requests).toHaveLength(51);
+  });
+
   it("deduplicates comments by id across partially overlapping pages", async () => {
     const pages = [
       Array.from({ length: 100 }, (_, index) => createApiComment(index + 1)),
