@@ -502,7 +502,7 @@ describe("forgejo provider runtime integration", () => {
     ]);
   });
 
-  it("only checks touched linked issues for incremental comments", async () => {
+  it("checks linked issue comments during incremental pulls with a since filter", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
       {
@@ -596,10 +596,13 @@ describe("forgejo provider runtime integration", () => {
 
     await provider.pull(createBinding(), project);
 
-    expect(listCommentsCalls).toEqual([{ issueNumber: 7, since: expect.any(String) }]);
+    expect(listCommentsCalls).toEqual([
+      { issueNumber: 7, since: expect.any(String) },
+      { issueNumber: 8, since: expect.any(String) },
+    ]);
   });
 
-  it("skips comment fetches when no issues are touched by the current pull", async () => {
+  it("imports comment-only changes when the issue timestamp is unchanged", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
       {
@@ -640,16 +643,43 @@ describe("forgejo provider runtime integration", () => {
 
     await provider.pull(createBinding(), project);
 
-    const listCommentsCalls: number[] = [];
-    issueClient.listComments = async (_bindingTarget, issueNumber) => {
-      listCommentsCalls.push(issueNumber);
-      throw new Error("comments should not be fetched when no issues are touched");
+    const commentUpdatedAtAfterFirstPull = new Date(Date.now() + 60_000).toISOString();
+    issueClient.seedComments(target, 7, [
+      {
+        id: 11,
+        issueNumber: 7,
+        body: "Comment seven",
+        author: "alice",
+        createdAt: "2026-03-12T01:30:00.000Z",
+        updatedAt: "2026-03-12T01:30:00.000Z",
+      },
+      {
+        id: 12,
+        issueNumber: 7,
+        body: "Comment-only update",
+        author: "alice",
+        createdAt: commentUpdatedAtAfterFirstPull,
+        updatedAt: commentUpdatedAtAfterFirstPull,
+      },
+    ]);
+
+    const listIssuesCalls: Array<{ since?: string }> = [];
+    const originalListIssues = issueClient.listIssues.bind(issueClient);
+    issueClient.listIssues = async (bindingTarget, options) => {
+      listIssuesCalls.push({ since: options?.since });
+      return originalListIssues(bindingTarget, options);
     };
 
     const result = await provider.pull(createBinding(), project);
 
-    expect(result.comments).toEqual([]);
-    expect(listCommentsCalls).toEqual([]);
+    expect(listIssuesCalls).toEqual([{ since: expect.any(String) }]);
+    expect(result.tasks).toEqual([]);
+    expect(result.comments).toEqual([
+      expect.objectContaining({
+        externalId: "12",
+        body: expect.stringContaining("Comment-only update"),
+      }),
+    ]);
   });
 
   it("records failure in runtime store when pull throws", async () => {
@@ -784,7 +814,8 @@ describe("forgejo provider runtime integration", () => {
     const finalResult = await provider.pull(binding, project);
 
     expect(finalResult.comments).toEqual([]);
-    expect(listCommentsCalls).toHaveLength(commentCallsAfterRetry);
+    expect(listCommentsCalls).toHaveLength(commentCallsAfterRetry + 1);
+    expect(listCommentsCalls.at(-1)).toBe(7);
   });
 
   it("skips pull when retry backoff has not elapsed", async () => {
