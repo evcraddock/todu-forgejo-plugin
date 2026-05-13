@@ -458,7 +458,7 @@ Each polling cycle processes the binding according to strategy:
 - list issues updated since the last successful checkpoint
 - refresh linked item field state
 - discover newly created open issues
-- list comments for changed linked issues, optionally constrained by a comment `since` checkpoint when deletion detection is not required
+- list comments for linked issues using a comment `since` checkpoint, so comment-only changes do not depend on issue `updated_at` behavior
 - mirror comment creates/edits into todu
 - normalize reserved labels/state if needed
 

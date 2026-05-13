@@ -105,6 +105,10 @@ Create an issue directly in the Forgejo UI. Wait one sync interval. Verify:
 - a new task appears in the dev project
 - title, status, priority, and labels are imported
 
+### Pull: comment-only sync
+
+After an issue is linked, add or edit a comment directly in Forgejo without changing the issue title, body, state, labels, or assignees. Wait one sync interval. Verify the comment is imported or updated in todu. This confirms comment polling does not rely on Forgejo updating the issue `updated_at` timestamp for comment-only changes.
+
 ### Pull: issue close
 
 Close an issue in Forgejo. Verify the todu task status becomes `done`.

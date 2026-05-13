@@ -330,21 +330,29 @@ export function createForgejoSyncProvider(
           importClosedOnBootstrap: getImportClosedOnBootstrap(binding),
         });
 
-        const touchedIssueNumbers = [
-          ...new Set([...pendingCommentIssueNumbers, ...lastPullResult.touchedIssueNumbers]),
+        const commentSince = runtimeState.lastSuccessAt ?? undefined;
+        const linkedCommentIssueNumbers = commentSince
+          ? linkStore.list(binding.id).map((itemLink) => itemLink.issueNumber)
+          : [];
+        const commentIssueNumbers = [
+          ...new Set([
+            ...pendingCommentIssueNumbers,
+            ...lastPullResult.touchedIssueNumbers,
+            ...linkedCommentIssueNumbers,
+          ]),
         ];
         const progressCursor = new Date().toISOString();
-        if (touchedIssueNumbers.length > 0) {
+        if (commentIssueNumbers.length > 0) {
           failureProgress = {
             phase: "pull:comments",
             cursor: progressCursor,
             progressAt: progressCursor,
-            pendingCommentIssueNumbers: touchedIssueNumbers,
+            pendingCommentIssueNumbers: commentIssueNumbers,
           };
         }
 
         const pullCommentsResult =
-          touchedIssueNumbers.length === 0
+          commentIssueNumbers.length === 0
             ? { comments: [], createdLinks: [] }
             : await pullComments({
                 binding,
@@ -352,8 +360,8 @@ export function createForgejoSyncProvider(
                 target,
                 itemLinkStore: linkStore,
                 commentLinkStore,
-                issueNumbers: touchedIssueNumbers,
-                since: runtimeState.lastSuccessAt ?? undefined,
+                issueNumbers: commentIssueNumbers,
+                since: commentSince,
                 onIssueError: ({ itemLink, error }) => {
                   const classification = classifyForgejoSyncError(error);
                   if (classification.kind !== "not-found") {
