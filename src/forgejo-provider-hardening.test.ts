@@ -538,6 +538,47 @@ describe("provider push failure handling", () => {
     expect(linkStore.getByIssueNumber(createBinding().id, 1)).not.toBeNull();
   });
 
+  it("records actionable error status when bounded comment processing fails", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Issue seven",
+        state: "open",
+        labels: ["status:active"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+    issueClient.listComments = async () => {
+      throw new Error(
+        "Forgejo pagination exceeded 5000 items for /repos/acme/roadmap/issues/7/comments"
+      );
+    };
+
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = await initProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      runtimeStore,
+    });
+
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow(
+      "Forgejo pagination exceeded 5000 items"
+    );
+
+    const status = provider.getState().bindingStatuses.get(createBinding().id);
+    expect(status).toMatchObject({
+      state: "error",
+      lastErrorSummary: expect.stringContaining("Forgejo pagination exceeded 5000 items"),
+    });
+    expect(runtimeStore.get(createBinding().id)?.lastError).toContain(
+      "Forgejo pagination exceeded 5000 items"
+    );
+  });
+
   it("records failure state when push throws", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.createIssue = async () => {
