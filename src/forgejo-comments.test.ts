@@ -1,8 +1,10 @@
 import {
+  createCommentSyncProvenanceId,
   createIntegrationBindingId,
   createNoteId,
   createProjectId,
   createTaskId,
+  type CommentSyncProvenance,
   type ExportedCommentInput,
   type ExportedTaskInput,
   type IntegrationBinding,
@@ -42,6 +44,29 @@ const target = {
   owner: "erik",
   repo: "todu-forgejo-plugin-test",
 };
+
+function createCommentProvenance(input: {
+  localNoteId: ExportedCommentInput["localNoteId"];
+  externalTaskId?: string;
+  externalCommentId: string;
+  lastMirroredAt?: string;
+}): CommentSyncProvenance {
+  const timestamp = "2026-03-12T05:00:00.000Z";
+  return {
+    id: createCommentSyncProvenanceId(`prov-${String(input.localNoteId)}`),
+    bindingId: binding.id,
+    provider: binding.provider,
+    targetKind: binding.targetKind,
+    targetRef: binding.targetRef,
+    localNoteId: input.localNoteId,
+    externalTaskId:
+      input.externalTaskId ?? "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+    externalCommentId: input.externalCommentId,
+    lastMirroredAt: input.lastMirroredAt ?? timestamp,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
 
 function createTask(
   comments: ExportedCommentInput[],
@@ -778,6 +803,156 @@ describe("forgejo comments", () => {
     ]);
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-stale"))).toBeNull();
     expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-existing"))).not.toBeNull();
+  });
+
+  it("uses structured provenance instead of legacy note tags when resolving mirrored comment edits", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const itemLinkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://forgejo.caradoc.com/erik/todu-forgejo-plugin-test#7",
+        title: "Issue",
+        state: "open",
+        labels: [],
+        assigneeActorIds: [],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+    issueClient.seedComments(target, 7, [
+      {
+        id: 21,
+        issueNumber: 7,
+        body: "Old mirrored body",
+        author: "todu",
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+      {
+        id: 99,
+        issueNumber: 7,
+        body: "Stale linked body",
+        author: "todu",
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T01:00:00.000Z",
+      },
+    ]);
+
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-1"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+      })
+    );
+    commentLinkStore.save({
+      bindingId: binding.id,
+      taskId: createTaskId("task-1"),
+      noteId: createNoteId("note-real"),
+      issueNumber: 7,
+      forgejoCommentId: 99,
+      lastMirroredAt: "2026-03-12T01:00:00.000Z",
+      lastMirroredBody: "Old mirrored body",
+      origin: "todu",
+    });
+
+    const result = await pushComments({
+      binding,
+      issueClient,
+      target,
+      tasks: [
+        createTask([
+          {
+            localNoteId: createNoteId("note-real"),
+            body: "Updated mirrored body",
+            createdAt: "2026-03-12T00:00:00.000Z",
+            updatedAt: "2026-03-12T06:00:00.000Z",
+            provenance: createCommentProvenance({
+              localNoteId: createNoteId("note-real"),
+              externalCommentId: "21",
+              lastMirroredAt: "2026-03-12T01:00:00.000Z",
+            }),
+          },
+        ]),
+      ],
+      itemLinkStore,
+      commentLinkStore,
+      loadTaskNotes: async () => {
+        throw new Error("legacy tag fallback should not be loaded when provenance is present");
+      },
+    });
+
+    expect(result.updatedComments).toHaveLength(1);
+    expect(result.updatedComments[0].id).toBe(21);
+    expect(result.createdComments).toEqual([]);
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-real"))).toMatchObject({
+      forgejoCommentId: 21,
+      lastMirroredBody: "Updated mirrored body",
+      origin: "todu",
+    });
+    expect(issueClient.snapshotComments(target, 7).find((comment) => comment.id === 99)?.body).toBe(
+      "Stale linked body"
+    );
+  });
+
+  it("uses structured provenance to avoid echoing unchanged imported Forgejo comments", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const itemLinkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+
+    itemLinkStore.save(
+      createLinkFromTask({
+        binding,
+        taskId: createTaskId("task-1"),
+        baseUrl: target.baseUrl,
+        owner: target.owner,
+        repo: target.repo,
+        issueNumber: 7,
+      })
+    );
+
+    const result = await pushComments({
+      binding,
+      issueClient,
+      target,
+      tasks: [
+        createTask([
+          {
+            localNoteId: createNoteId("note-imported"),
+            body: formatAttributedBody(
+              formatForgejoAttribution("alice", "2026-03-12T00:00:00.000Z"),
+              "Imported body"
+            ),
+            createdAt: "2026-03-12T00:00:00.000Z",
+            provenance: createCommentProvenance({
+              localNoteId: createNoteId("note-imported"),
+              externalCommentId: "21",
+            }),
+          },
+        ]),
+      ],
+      itemLinkStore,
+      commentLinkStore,
+      loadTaskNotes: async () => {
+        throw new Error("legacy tag fallback should not be loaded when provenance is present");
+      },
+    });
+
+    expect(result.createdComments).toEqual([]);
+    expect(result.updatedComments).toEqual([]);
+    expect(result.commentLinks).toEqual([]);
+    expect(commentLinkStore.getByNoteId(binding.id, createNoteId("note-imported"))).toMatchObject({
+      forgejoCommentId: 21,
+      lastMirroredBody: "Imported body",
+      origin: "forgejo",
+    });
   });
 
   it("reconciles note-tag comment linkage conflicts to the canonical forgejo comment id during push", async () => {

@@ -36,6 +36,6 @@
     "vitest": "^4.0.18"
   },
   "dependencies": {
-    "@todu/core": "^0.17.1"
+    "@todu/core": "^0.23.1"
   }
 }

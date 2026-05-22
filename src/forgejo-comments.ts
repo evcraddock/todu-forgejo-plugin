@@ -34,6 +34,8 @@ interface ForgejoPushNote {
   author: string;
   createdAt: ExportedCommentInput["createdAt"];
   updatedAt?: ExportedCommentInput["updatedAt"];
+  provenance?: ExportedCommentInput["provenance"];
+  externalId?: ExportedCommentInput["externalId"];
 }
 
 export function formatForgejoAttribution(author: string, timestamp: string): string {
@@ -99,6 +101,35 @@ function isLegacyImportedCommentLinkNoteId(noteId: NoteId): boolean {
 function getImportedForgejoSyncExternalId(note: Pick<ForgejoPushNote, "tags">): string | null {
   const syncTag = note.tags.find((tag) => tag.startsWith(SYNC_EXTERNAL_ID_TAG_PREFIX));
   return syncTag ? syncTag.slice(SYNC_EXTERNAL_ID_TAG_PREFIX.length) : null;
+}
+
+function getStructuredForgejoSyncExternalId(
+  binding: IntegrationBinding,
+  note: Pick<ForgejoPushNote, "provenance" | "externalId">
+): string | null {
+  if (note.provenance?.bindingId === binding.id) {
+    return note.provenance.externalCommentId;
+  }
+
+  return note.externalId ?? null;
+}
+
+function getForgejoSyncExternalId(
+  binding: IntegrationBinding,
+  note: Pick<ForgejoPushNote, "provenance" | "externalId" | "tags">
+): string | null {
+  return (
+    getStructuredForgejoSyncExternalId(binding, note) ?? getImportedForgejoSyncExternalId(note)
+  );
+}
+
+function parseForgejoCommentId(externalCommentId: string | null): number | null {
+  if (externalCommentId === null) {
+    return null;
+  }
+
+  const forgejoCommentId = Number(externalCommentId);
+  return Number.isInteger(forgejoCommentId) && forgejoCommentId > 0 ? forgejoCommentId : null;
 }
 
 function getCommentLinkOrigin(link: ForgejoCommentLink): ForgejoCommentOrigin {
@@ -291,7 +322,13 @@ export async function pushComments(input: {
       continue;
     }
 
-    const taskNotes = input.loadTaskNotes ? await input.loadTaskNotes(task.localTaskId) : [];
+    const needsLegacyTagFallback = task.comments.some(
+      (comment) => getStructuredForgejoSyncExternalId(input.binding, comment) === null
+    );
+    const taskNotes =
+      needsLegacyTagFallback && input.loadTaskNotes
+        ? await input.loadTaskNotes(task.localTaskId)
+        : [];
     const noteTagsById = new Map(taskNotes.map((note) => [String(note.id), note.tags]));
     const notes = task.comments.map((comment) =>
       toPushNote(comment, noteTagsById.get(String(comment.localNoteId)) ?? [])
@@ -369,6 +406,8 @@ function toPushNote(comment: ExportedCommentInput, tags: string[]): ForgejoPushN
     author: TODU_COMMENT_AUTHOR,
     createdAt: comment.createdAt,
     updatedAt: comment.updatedAt,
+    provenance: comment.provenance,
+    externalId: comment.externalId,
   };
 }
 
@@ -380,13 +419,13 @@ function resolveCommentLinkForPush(input: {
   commentLinkStore: ForgejoCommentLinkStore;
 }): ForgejoCommentLink | null {
   const existingLink = input.commentLinkStore.getByNoteId(input.binding.id, input.note.id);
-  const syncExternalCommentId = getImportedForgejoSyncExternalId(input.note);
+  const forgejoCommentId = parseForgejoCommentId(
+    getForgejoSyncExternalId(input.binding, input.note)
+  );
 
-  if (syncExternalCommentId === null) {
+  if (forgejoCommentId === null) {
     return existingLink;
   }
-
-  const forgejoCommentId = Number(syncExternalCommentId);
   const canonicalLink = input.commentLinkStore.getByForgejoCommentId(
     input.binding.id,
     forgejoCommentId
