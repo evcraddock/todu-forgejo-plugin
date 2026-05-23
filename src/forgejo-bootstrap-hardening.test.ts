@@ -471,6 +471,189 @@ describe("bootstrap pull request filtering", () => {
 });
 
 describe("bootstrap steady-state deduplication", () => {
+  it("relinks an unlinked task from its Forgejo source URL before updating", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Old title",
+        body: "Existing body",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      ...target,
+      tasks: [
+        createPushTask({
+          title: "Updated title",
+          description: "Existing body",
+          sourceUrl: "https://code.example.com/acme/roadmap/issues/7",
+          updatedAt: "2026-03-12T01:00:00.000Z",
+        }),
+      ],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.createdIssues).toHaveLength(0);
+    expect(result.createdLinks).toHaveLength(1);
+    expect(result.updatedIssues).toHaveLength(1);
+    expect(result.taskActions).toEqual([
+      expect.objectContaining({ action: "link", issueNumber: 7, reason: "matched task sourceUrl" }),
+      expect.objectContaining({ action: "update", issueNumber: 7 }),
+    ]);
+    expect(issueClient.snapshotIssues(target)).toHaveLength(1);
+    expect(issueClient.snapshotIssues(target)[0].title).toBe("Updated title");
+    expect(linkStore.getByTaskId(binding.id, createTaskId("task-1"))).toMatchObject({
+      issueNumber: 7,
+    });
+  });
+
+  it("relinks an unlinked task from unique matching remote metadata instead of creating", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Weekly review",
+        body: "Review the week",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      ...target,
+      tasks: [
+        createPushTask({
+          title: "Weekly review",
+          description: "Review the week",
+          updatedAt: "2026-03-12T00:30:00.000Z",
+        }),
+      ],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.createdIssues).toHaveLength(0);
+    expect(result.createdLinks).toHaveLength(1);
+    expect(result.taskActions).toContainEqual(
+      expect.objectContaining({
+        action: "link",
+        issueNumber: 7,
+        reason: "matched unique remote issue metadata",
+      })
+    );
+    expect(issueClient.snapshotIssues(target)).toHaveLength(1);
+  });
+
+  it("skips ambiguous unlinked task creates when multiple remote issues match", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Weekly review",
+        body: "Review the week",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+      {
+        number: 8,
+        externalId: "https://code.example.com/acme/roadmap#8",
+        title: "Weekly review",
+        body: "Review the week",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      ...target,
+      tasks: [createPushTask({ title: "Weekly review", description: "Review the week" })],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.createdIssues).toHaveLength(0);
+    expect(result.createdLinks).toHaveLength(0);
+    expect(result.skippedIssueCreates).toBe(1);
+    expect(result.taskActions).toContainEqual(
+      expect.objectContaining({
+        action: "skip",
+        reason: expect.stringContaining("matching metadata"),
+      })
+    );
+    expect(issueClient.snapshotIssues(target)).toHaveLength(2);
+  });
+
+  it("skips a duplicate remote create failure without stopping later task creates", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    const linkStore = createInMemoryForgejoItemLinkStore();
+    const originalCreateIssue = issueClient.createIssue.bind(issueClient);
+    issueClient.createIssue = async (requestTarget, input) => {
+      if (input.title === "Bad duplicate") {
+        throw new Error(
+          'Forgejo API POST /repos/acme/roadmap/issues failed: 500 {"message":"newIssue: unique constraint violation: ERROR: duplicate key value violates unique constraint \\"UQE_issue_repo_index\\""}'
+        );
+      }
+
+      return originalCreateIssue(requestTarget, input);
+    };
+
+    const result = await bootstrapTasksToForgejoIssues({
+      binding,
+      ...target,
+      tasks: [
+        createPushTask({ localTaskId: createTaskId("task-bad"), title: "Bad duplicate" }),
+        createPushTask({ localTaskId: createTaskId("task-good"), title: "Good create" }),
+      ],
+      issueClient,
+      linkStore,
+    });
+
+    expect(result.createdIssues).toHaveLength(1);
+    expect(result.createdIssues[0].title).toBe("Good create");
+    expect(result.skippedIssueCreates).toBe(1);
+    expect(result.taskActions).toEqual([
+      expect.objectContaining({
+        taskId: createTaskId("task-bad"),
+        title: "Bad duplicate",
+        action: "skip",
+        reason: expect.stringContaining("remote issue create conflict"),
+      }),
+      expect.objectContaining({
+        taskId: createTaskId("task-good"),
+        title: "Good create",
+        action: "create",
+      }),
+    ]);
+  });
+
   it("does not create duplicate issues on repeated push cycles", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();

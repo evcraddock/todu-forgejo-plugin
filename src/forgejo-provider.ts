@@ -421,9 +421,11 @@ export function createForgejoSyncProvider(
           closedIssues: [],
           createdLinks: [],
           taskUpdates: [],
+          taskActions: [],
           hydratedLinkedTasks: 0,
           issueReadCount: 0,
           skippedLinkedTasks: 0,
+          skippedIssueCreates: 0,
         };
         logger.debug("skipping push due to binding strategy", logContext);
         return { commentLinks: [], taskLinks: [] };
@@ -444,6 +446,10 @@ export function createForgejoSyncProvider(
       let failureProgress: ForgejoRuntimeFailureProgress | undefined;
       try {
         loopPreventionStore.clearExpired(DEFAULT_LOOP_PREVENTION_MAX_AGE_MS);
+        failureProgress = {
+          phase: "push:issues",
+          progressAt: new Date().toISOString(),
+        };
 
         lastPushResult = await bootstrapTasksToForgejoIssues({
           binding,
@@ -469,6 +475,27 @@ export function createForgejoSyncProvider(
             );
           },
         });
+
+        for (const taskAction of lastPushResult.taskActions) {
+          const logTaskActionContext = {
+            ...logContext,
+            entityType: "task" as const,
+            itemId: String(taskAction.taskId),
+            itemTitle: taskAction.title,
+            action: taskAction.action,
+            ...(taskAction.issueNumber ? { issueNumber: taskAction.issueNumber } : {}),
+            ...(taskAction.reason ? { reason: taskAction.reason } : {}),
+          };
+          const shouldWarn =
+            taskAction.action === "skip" &&
+            taskAction.reason !== undefined &&
+            /(remote issue create conflict|matching metadata)/i.test(taskAction.reason);
+          if (shouldWarn) {
+            logger.warn(`push task ${taskAction.action}`, logTaskActionContext);
+          } else {
+            logger.info(`push task ${taskAction.action}`, logTaskActionContext);
+          }
+        }
 
         for (const createdIssue of lastPushResult.createdIssues) {
           loopPreventionStore.recordWrite(
@@ -541,6 +568,7 @@ export function createForgejoSyncProvider(
             `${lastPushResult.updatedIssues.length} updated, ` +
             `${lastPushResult.closedIssues.length} closed, ` +
             `${lastPushResult.skippedLinkedTasks} skipped, ` +
+            `${lastPushResult.skippedIssueCreates} create skips, ` +
             `${lastPushResult.issueReadCount} issue reads, ` +
             `${pushCommentsResult.createdComments.length} comment creates, ` +
             `${pushCommentsResult.updatedComments.length} comment updates`,

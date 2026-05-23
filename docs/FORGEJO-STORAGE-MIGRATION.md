@@ -134,6 +134,10 @@ grep -R 'task-xxxxxxxx' "$HOME/Library/Application Support/todu/forgejo-plugin"
 
 A match in `item-links.json` means the Forgejo plugin is writing link state to the migrated app-owned directory.
 
+## Repair missing `item-links.json` entries
+
+If `item-links.json` is missing or stale, first keep the affected binding in `pull` or `none` while inspecting state so the daemon does not create new remote issues during repair. Back up the current storage directory, then run one pull cycle with the corrected `storageDir`; open Forgejo issues are re-imported and the plugin rebuilds links for those issues. For existing local tasks that already have a Forgejo external ID or source URL, a later push cycle relinks the task before updating it. If the plugin logs an ambiguous metadata match, repair the item manually by adding a single JSON object with `bindingId`, `taskId`, `issueNumber`, `externalId`, and optional `lastMirroredAt`, or by restoring the entry from backup. Only return the binding to `bidirectional` after `item-links.json` contains the expected task/issue pair and a dry push cycle no longer reports skipped ambiguous creates.
+
 ## Troubleshooting
 
 - `Legacy storage directory does not exist`: confirm the `--from` path is absolute and exists on this machine.
