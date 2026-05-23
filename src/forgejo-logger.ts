@@ -1,7 +1,7 @@
 import type { IntegrationBinding } from "@todu/core";
 
 export type ForgejoSyncDirection = "pull" | "push";
-export type ForgejoSyncEntityType = "issue" | "comment" | "label" | "status";
+export type ForgejoSyncEntityType = "issue" | "comment" | "label" | "status" | "task";
 export type ForgejoLogLevel = "debug" | "info" | "warn" | "error";
 
 export interface ForgejoSyncLogContext {
@@ -11,6 +11,10 @@ export interface ForgejoSyncLogContext {
   direction?: ForgejoSyncDirection;
   entityType?: ForgejoSyncEntityType;
   itemId?: string;
+  itemTitle?: string;
+  action?: string;
+  issueNumber?: number;
+  reason?: string;
 }
 
 export interface ForgejoSyncLogEntry {
@@ -89,7 +93,23 @@ export function formatForgejoLogEntry(entry: ForgejoSyncLogEntry): string {
     parts.push(`[item:${entry.context.itemId}]`);
   }
 
+  if (entry.context.issueNumber) {
+    parts.push(`[issue:${entry.context.issueNumber}]`);
+  }
+
+  if (entry.context.action) {
+    parts.push(`[action:${entry.context.action}]`);
+  }
+
+  if (entry.context.itemTitle) {
+    parts.push(`[title:${entry.context.itemTitle}]`);
+  }
+
   parts.push(entry.message);
+
+  if (entry.context.reason) {
+    parts.push(`| reason: ${entry.context.reason}`);
+  }
 
   if (entry.error) {
     parts.push(`| error: ${entry.error}`);

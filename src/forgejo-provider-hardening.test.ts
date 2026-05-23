@@ -475,6 +475,60 @@ describe("provider error classification coverage", () => {
 });
 
 describe("provider push failure handling", () => {
+  it("logs task-level push decisions with binding, repo, task id, title, and action", async () => {
+    const issueClient = createInMemoryForgejoIssueClient();
+    issueClient.seedIssues(target, [
+      {
+        number: 7,
+        externalId: "https://code.example.com/acme/roadmap#7",
+        title: "Weekly review",
+        body: "Review the week",
+        state: "open",
+        labels: ["status:active", "priority:medium"],
+        assignees: [],
+        createdAt: "2026-03-12T00:00:00.000Z",
+        updatedAt: "2026-03-12T00:00:00.000Z",
+      },
+    ]);
+
+    const logger = createForgejoSyncLogger();
+    const provider = await initProvider({
+      issueClient,
+      linkStore: createInMemoryForgejoItemLinkStore(),
+      logger,
+    });
+
+    await provider.push(
+      createBinding(),
+      [
+        createPushTask({
+          title: "Weekly review",
+          description: "Review the week",
+          updatedAt: "2026-03-12T00:30:00.000Z",
+        }),
+      ],
+      project
+    );
+
+    expect(logger.getEntries()).toContainEqual(
+      expect.objectContaining({
+        level: "info",
+        message: "push task link",
+        context: expect.objectContaining({
+          bindingId: createBinding().id,
+          repo: "acme/roadmap",
+          direction: "push",
+          entityType: "task",
+          itemId: String(createTaskId("task-1")),
+          itemTitle: "Weekly review",
+          action: "link",
+          issueNumber: 7,
+          reason: "matched unique remote issue metadata",
+        }),
+      })
+    );
+  });
+
   it("recreates a missing remote issue for a stale local reference and remirrors comments", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();

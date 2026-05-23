@@ -34,15 +34,28 @@ export interface ForgejoBootstrapTaskUpdate {
   sourceUrl?: string;
 }
 
+export type ForgejoBootstrapTaskActionKind = "link" | "update" | "skip" | "create";
+
+export interface ForgejoBootstrapTaskAction {
+  taskId: ExportedTaskInput["localTaskId"];
+  title: string;
+  action: ForgejoBootstrapTaskActionKind;
+  issueNumber?: number;
+  externalId?: string;
+  reason?: string;
+}
+
 export interface ForgejoBootstrapExportResult {
   createdIssues: ForgejoIssue[];
   updatedIssues: ForgejoIssue[];
   closedIssues: ForgejoIssue[];
   createdLinks: ForgejoItemLink[];
   taskUpdates: ForgejoBootstrapTaskUpdate[];
+  taskActions: ForgejoBootstrapTaskAction[];
   hydratedLinkedTasks: number;
   issueReadCount: number;
   skippedLinkedTasks: number;
+  skippedIssueCreates: number;
 }
 
 export async function bootstrapForgejoIssuesToTasks(input: {
@@ -135,9 +148,11 @@ export async function bootstrapTasksToForgejoIssues(input: {
   const closedIssues: ForgejoIssue[] = [];
   const createdLinks: ForgejoItemLink[] = [];
   const taskUpdates: ForgejoBootstrapTaskUpdate[] = [];
+  const taskActions: ForgejoBootstrapTaskAction[] = [];
   let hydratedLinkedTasks = 0;
   let issueReadCount = 0;
   let skippedLinkedTasks = 0;
+  let skippedIssueCreates = 0;
 
   const target = {
     baseUrl: input.baseUrl,
@@ -174,32 +189,144 @@ export async function bootstrapTasksToForgejoIssues(input: {
     }
   };
 
-  const createIssueForTask = async (task: ExportedTaskInput): Promise<boolean> => {
-    if (!TASK_BOOTSTRAP_EXPORT_STATUSES.has(task.status)) {
-      return false;
-    }
+  const recordTaskAction = (action: ForgejoBootstrapTaskAction): void => {
+    taskActions.push(action);
+  };
 
-    const issueCreate = createForgejoIssueCreateFromTask(task);
-    await ensureLabelsExist(issueCreate.labels ?? []);
-    const createdIssue = await input.issueClient.createIssue(target, issueCreate);
-
-    createdIssues.push(createdIssue);
-
+  const linkTaskToIssue = (task: ExportedTaskInput, issue: ForgejoIssue): ForgejoItemLink => {
     const createdLink = createLinkFromTask({
       binding: input.binding,
       taskId: task.localTaskId as ForgejoItemLink["taskId"],
       baseUrl: input.baseUrl,
       owner: input.owner,
       repo: input.repo,
-      issueNumber: createdIssue.number,
-      lastMirroredAt: createdIssue.updatedAt ?? createdIssue.createdAt,
+      issueNumber: issue.number,
+      lastMirroredAt: issue.updatedAt ?? issue.createdAt,
     });
     input.linkStore.save(createdLink);
     createdLinks.push(createdLink);
     taskUpdates.push({
       taskId: task.localTaskId,
       externalId: createdLink.externalId,
-      sourceUrl: createdIssue.sourceUrl,
+      sourceUrl: issue.sourceUrl,
+    });
+    return createdLink;
+  };
+
+  let reconciliationIssues: ForgejoIssue[] | null = null;
+  const listReconciliationIssues = async (): Promise<ForgejoIssue[]> => {
+    if (!reconciliationIssues) {
+      issueReadCount += 1;
+      reconciliationIssues = await input.issueClient.listIssues(target);
+    }
+
+    return reconciliationIssues;
+  };
+
+  const createIssueForTask = async (task: ExportedTaskInput): Promise<boolean> => {
+    if (!TASK_BOOTSTRAP_EXPORT_STATUSES.has(task.status)) {
+      recordTaskAction({
+        taskId: task.localTaskId,
+        title: task.title,
+        action: "skip",
+        reason: `status ${task.status} is not exported`,
+      });
+      return false;
+    }
+
+    const reconciledIssue = await reconcileUnlinkedTaskToIssue(task, {
+      baseUrl: input.baseUrl,
+      owner: input.owner,
+      repo: input.repo,
+      listIssues: listReconciliationIssues,
+    });
+
+    if (reconciledIssue.kind === "ambiguous") {
+      skippedIssueCreates += 1;
+      recordTaskAction({
+        taskId: task.localTaskId,
+        title: task.title,
+        action: "skip",
+        reason: reconciledIssue.reason,
+      });
+      return false;
+    }
+
+    if (reconciledIssue.kind === "matched") {
+      const createdLink = linkTaskToIssue(task, reconciledIssue.issue);
+      recordTaskAction({
+        taskId: task.localTaskId,
+        title: task.title,
+        action: "link",
+        issueNumber: reconciledIssue.issue.number,
+        externalId: createdLink.externalId,
+        reason: reconciledIssue.reason,
+      });
+
+      if (
+        shouldPushTaskUpdate(task, reconciledIssue.issue) &&
+        !input.shouldSkipIssueUpdate?.(reconciledIssue.issue)
+      ) {
+        const issueUpdate = createForgejoIssueUpdateFromTask(task);
+        await ensureLabelsExist(issueUpdate.labels ?? []);
+        const updatedIssue = await input.issueClient.updateIssue(
+          target,
+          reconciledIssue.issue.number,
+          issueUpdate
+        );
+        input.linkStore.save({
+          ...createdLink,
+          lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
+        });
+        updatedIssues.push(updatedIssue);
+        recordTaskAction({
+          taskId: task.localTaskId,
+          title: task.title,
+          action: "update",
+          issueNumber: updatedIssue.number,
+          externalId: createdLink.externalId,
+          reason: "reconciled unlinked task before updating issue",
+        });
+      } else {
+        skippedLinkedTasks += 1;
+      }
+      return true;
+    }
+
+    const issueCreate = createForgejoIssueCreateFromTask(task);
+    await ensureLabelsExist(issueCreate.labels ?? []);
+
+    let createdIssue: ForgejoIssue;
+    try {
+      createdIssue = await input.issueClient.createIssue(target, issueCreate);
+    } catch (error) {
+      if (!isForgejoIssueCreateConflictError(error)) {
+        throw new Error(
+          `Forgejo issue create failed for task ${String(task.localTaskId)} (${JSON.stringify(
+            task.title
+          )}) in ${input.owner}/${input.repo}: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error }
+        );
+      }
+
+      skippedIssueCreates += 1;
+      recordTaskAction({
+        taskId: task.localTaskId,
+        title: task.title,
+        action: "skip",
+        reason: `remote issue create conflict: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return false;
+    }
+
+    createdIssues.push(createdIssue);
+    const createdLink = linkTaskToIssue(task, createdIssue);
+    recordTaskAction({
+      taskId: task.localTaskId,
+      title: task.title,
+      action: "create",
+      issueNumber: createdIssue.number,
+      externalId: createdLink.externalId,
     });
 
     return true;
@@ -231,14 +358,38 @@ export async function bootstrapTasksToForgejoIssues(input: {
 
         if (!shouldPushTaskUpdate(task, existingIssue)) {
           skippedLinkedTasks += 1;
+          recordTaskAction({
+            taskId: localTaskId,
+            title: task.title,
+            action: "skip",
+            issueNumber: existingIssue.number,
+            externalId: existingLink.externalId,
+            reason: "linked issue is already current",
+          });
           continue;
         }
 
         if (input.shouldSkipIssueUpdate?.(existingIssue)) {
+          recordTaskAction({
+            taskId: localTaskId,
+            title: task.title,
+            action: "skip",
+            issueNumber: existingIssue.number,
+            externalId: existingLink.externalId,
+            reason: "issue update skipped by loop prevention",
+          });
           continue;
         }
       } else if (!shouldPushTaskUpdateFromMirroredAt(task, existingLink.lastMirroredAt)) {
         skippedLinkedTasks += 1;
+        recordTaskAction({
+          taskId: localTaskId,
+          title: task.title,
+          action: "skip",
+          issueNumber: existingLink.issueNumber,
+          externalId: existingLink.externalId,
+          reason: "task is not newer than last mirror",
+        });
         continue;
       }
 
@@ -256,6 +407,13 @@ export async function bootstrapTasksToForgejoIssues(input: {
           lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
         });
         updatedIssues.push(updatedIssue);
+        recordTaskAction({
+          taskId: localTaskId,
+          title: task.title,
+          action: "update",
+          issueNumber: updatedIssue.number,
+          externalId: existingLink.externalId,
+        });
       } catch (error) {
         if (!isForgejoIssueNotFoundError(error)) {
           throw error;
@@ -281,17 +439,15 @@ export async function bootstrapTasksToForgejoIssues(input: {
         continue;
       }
 
-      const createdLink = createLinkFromTask({
-        binding: input.binding,
-        taskId: localTaskId as ForgejoItemLink["taskId"],
-        baseUrl: input.baseUrl,
-        owner: input.owner,
-        repo: input.repo,
-        issueNumber: matchingExternalId.issueNumber,
-        lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
+      const createdLink = linkTaskToIssue(task, existingIssue);
+      recordTaskAction({
+        taskId: localTaskId,
+        title: task.title,
+        action: "link",
+        issueNumber: existingIssue.number,
+        externalId: createdLink.externalId,
+        reason: "matched task externalId",
       });
-      input.linkStore.save(createdLink);
-      createdLinks.push(createdLink);
 
       if (
         shouldPushTaskUpdate(task, existingIssue) &&
@@ -309,6 +465,16 @@ export async function bootstrapTasksToForgejoIssues(input: {
           lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
         });
         updatedIssues.push(updatedIssue);
+        recordTaskAction({
+          taskId: localTaskId,
+          title: task.title,
+          action: "update",
+          issueNumber: updatedIssue.number,
+          externalId: createdLink.externalId,
+          reason: "linked task externalId before updating issue",
+        });
+      } else {
+        skippedLinkedTasks += 1;
       }
       continue;
     }
@@ -356,15 +522,159 @@ export async function bootstrapTasksToForgejoIssues(input: {
     closedIssues,
     createdLinks,
     taskUpdates,
+    taskActions,
     hydratedLinkedTasks,
     issueReadCount,
     skippedLinkedTasks,
+    skippedIssueCreates,
   };
 }
 
 function isForgejoIssueNotFoundError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /\b404\b/.test(message) || /issue not found/i.test(message);
+}
+
+function isForgejoIssueCreateConflictError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /duplicate key value violates unique constraint/i.test(message) ||
+    /UQE_issue_repo_index/i.test(message) ||
+    /issue.*already exists/i.test(message) ||
+    /already.*issue/i.test(message)
+  );
+}
+
+type ForgejoIssueReconciliationResult =
+  | { kind: "none" }
+  | { kind: "matched"; issue: ForgejoIssue; reason: string }
+  | { kind: "ambiguous"; reason: string };
+
+async function reconcileUnlinkedTaskToIssue(
+  task: ExportedTaskInput,
+  input: {
+    baseUrl: string;
+    owner: string;
+    repo: string;
+    listIssues: () => Promise<ForgejoIssue[]>;
+  }
+): Promise<ForgejoIssueReconciliationResult> {
+  const explicitRef = getMatchingIssueReference(task, input.baseUrl, input.owner, input.repo);
+  if (explicitRef) {
+    const issues = await input.listIssues();
+    const issue = issues.find((candidate) => candidate.number === explicitRef.issueNumber);
+    if (issue) {
+      return { kind: "matched", issue, reason: `matched task ${explicitRef.source}` };
+    }
+  }
+
+  const issues = await input.listIssues();
+  const metadataMatches = issues.filter((issue) => issueMatchesTaskCreateMetadata(task, issue));
+  if (metadataMatches.length === 1) {
+    return {
+      kind: "matched",
+      issue: metadataMatches[0],
+      reason: "matched unique remote issue metadata",
+    };
+  }
+
+  if (metadataMatches.length > 1) {
+    return {
+      kind: "ambiguous",
+      reason: `found ${metadataMatches.length} remote issues with matching metadata; skipped create to avoid a duplicate`,
+    };
+  }
+
+  return { kind: "none" };
+}
+
+function getMatchingIssueReference(
+  task: ExportedTaskInput,
+  baseUrl: string,
+  owner: string,
+  repo: string
+): { issueNumber: number; source: "externalId" | "sourceUrl" | "localTaskId" } | null {
+  const externalIdMatch = getMatchingExternalId(task, baseUrl, owner, repo);
+  if (externalIdMatch) {
+    return { ...externalIdMatch, source: "externalId" };
+  }
+
+  const sourceUrlMatch = getMatchingSourceUrl(task.sourceUrl, baseUrl, owner, repo);
+  if (sourceUrlMatch) {
+    return { ...sourceUrlMatch, source: "sourceUrl" };
+  }
+
+  const localTaskId = String(task.localTaskId);
+  const importedTaskPrefix = "forgejo:";
+  if (localTaskId.startsWith(importedTaskPrefix)) {
+    const importedExternalId = localTaskId.slice(importedTaskPrefix.length);
+    const parsed = getMatchingExternalId(
+      { ...task, externalId: importedExternalId },
+      baseUrl,
+      owner,
+      repo
+    );
+    if (parsed) {
+      return { ...parsed, source: "localTaskId" };
+    }
+  }
+
+  return null;
+}
+
+function getMatchingSourceUrl(
+  sourceUrl: string | undefined,
+  baseUrl: string,
+  owner: string,
+  repo: string
+): { issueNumber: number } | null {
+  if (!sourceUrl) {
+    return null;
+  }
+
+  const escapedBaseUrl = escapeRegExp(baseUrl.replace(/\/+$/, ""));
+  const escapedOwner = escapeRegExp(owner);
+  const escapedRepo = escapeRegExp(repo);
+  const match = sourceUrl.match(
+    new RegExp(`^${escapedBaseUrl}/${escapedOwner}/${escapedRepo}/issues/(\\d+)(?:[#/?].*)?$`)
+  );
+  if (!match) {
+    return null;
+  }
+
+  const issueNumber = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(issueNumber) && issueNumber > 0 ? { issueNumber } : null;
+}
+
+function issueMatchesTaskCreateMetadata(task: ExportedTaskInput, issue: ForgejoIssue): boolean {
+  const expected = createForgejoIssueCreateFromTask(task);
+  if (issue.isPullRequest || expected.title !== issue.title) {
+    return false;
+  }
+
+  if ((expected.body ?? "") !== (issue.body ?? "")) {
+    return false;
+  }
+
+  if ((expected.state ?? "open") !== issue.state) {
+    return false;
+  }
+
+  return stringSetsEqual(expected.labels ?? [], issue.labels);
+}
+
+function stringSetsEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function createForgejoIssueCloseFromDeletion(issue: ForgejoIssue): {
