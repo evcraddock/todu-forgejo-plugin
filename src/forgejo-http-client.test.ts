@@ -25,6 +25,20 @@ function createApiComment(id: number) {
   };
 }
 
+function createApiIssue(number: number) {
+  return {
+    number,
+    title: `Issue ${number}`,
+    body: `Body ${number}`,
+    state: "open" as const,
+    labels: [],
+    assignees: [],
+    html_url: `https://forge.caradoc.com/acme/roadmap/issues/${number}`,
+    created_at: "2026-05-12T00:00:00.000Z",
+    updated_at: "2026-05-12T00:00:00.000Z",
+  };
+}
+
 describe("forgejo http client", () => {
   it("uses binding target credentials when provided", async () => {
     const requests: Array<{ url: string; authorization: string | null }> = [];
@@ -53,6 +67,31 @@ describe("forgejo http client", () => {
         url: "https://forge.caradoc.com/api/v1/repos/acme/roadmap/issues?state=all&limit=100&page=1",
         authorization: "Bearer instance-token",
       },
+    ]);
+  });
+
+  it("continues issue pagination when Forgejo returns fewer items than requested", async () => {
+    const requests: string[] = [];
+    const pages = [
+      Array.from({ length: 50 }, (_, index) => createApiIssue(index + 51)),
+      Array.from({ length: 37 }, (_, index) => createApiIssue(index + 14)),
+      [],
+    ];
+    const fetchImpl: typeof fetch = async (url) => {
+      requests.push(String(url));
+      return createJsonResponse(pages.shift() ?? []);
+    };
+
+    const client = createHttpForgejoIssueClient("token", { fetchImpl });
+
+    const issues = await client.listIssues(target);
+
+    expect(issues).toHaveLength(87);
+    expect(issues.some((issue) => issue.number === 23)).toBe(true);
+    expect(requests).toEqual([
+      "https://forge.caradoc.com/api/v1/repos/acme/roadmap/issues?state=all&limit=100&page=1",
+      "https://forge.caradoc.com/api/v1/repos/acme/roadmap/issues?state=all&limit=100&page=2",
+      "https://forge.caradoc.com/api/v1/repos/acme/roadmap/issues?state=all&limit=100&page=3",
     ]);
   });
 

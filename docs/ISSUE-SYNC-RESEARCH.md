@@ -2,7 +2,7 @@
 
 ## Status
 
-This document records the behavior verified in `todu-forgejo-plugin` at commit `cdf0008` and compares it with `docs/ARCHITECTURE.md`, the phase plans, `todu-github-plugin`, and the Todu sync-provider v3 host runtime. It describes current behavior separately from recommendations. No runtime changes are part of this research task.
+This document records the behavior verified in `todu-forgejo-plugin` from base commit `cdf0008`, including the server-clamped pagination fix carried by this PR, and compares it with `docs/ARCHITECTURE.md`, the phase plans, `todu-github-plugin`, and the Todu sync-provider v3 host runtime. It describes current behavior separately from recommendations.
 
 ## Executive summary
 
@@ -138,6 +138,8 @@ Issue and comment writes are recorded by entity ID and remote timestamp in an in
 
 The plugin keeps one binding runtime `cursor` and one `lastSuccessAt`. Pull uses the cursor for issue `since` and `lastSuccessAt` for comment `since`. Comment-only changes are found by querying every linked issue with a comment `since` filter.
 
+The shared HTTP page walker requests 100 items but continues through short non-empty pages because Forgejo can clamp responses below the requested limit; the configured `forge.caradoc.com` instance reports a maximum of 50. It stops on an empty page, a repeated page signature, or a page containing no new keyed items, with maximum page and item bounds. This prevents issue lists from being silently truncated after the first server-clamped page while retaining protection against endpoints that ignore pagination.
+
 A comment failure can save pending issue numbers and partial-progress diagnostics. Active task `task-912aa03b` correctly identifies that the current post-fetch local timestamp can advance beyond unobserved issue updates.
 
 There are two broader checkpoint risks:
@@ -160,6 +162,7 @@ These risks can silently skip records rather than merely retry them.
 | Lifecycle            | Close, cancel, reopen, and local hard-delete handling                                 | Remote hard deletion can recreate an issue instead of canceling the task; stale comment links remain after local task deletion  |
 | Comments             | Bidirectional create/edit, attribution, structured provenance, non-propagating delete | Origin-sensitive conflicts, no end-to-end local edit timestamp, and body-based recovery can choose the wrong duplicate          |
 | Checkpoints          | Incremental issue/comment reads, retry state, pending comment issues                  | Pull and push share checkpoints; provider commits before host apply; active partial-failure bug                                 |
+| Pagination           | Bounded, deduplicated page walking that handles server-clamped short pages            | Pagination headers are not used, so a trailing empty-page request is required                                                   |
 | Validation           | Extensive in-memory unit and hardening tests                                          | `vitest.integration.config.ts` exists, but no real Forgejo `*.integration.test.ts` suite exists                                 |
 | Documentation        | Detailed intended architecture                                                        | README still describes a minimal stub, assignee direction is stale, and architecture overstates conflict and deletion semantics |
 
