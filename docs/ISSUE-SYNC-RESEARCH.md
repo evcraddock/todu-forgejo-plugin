@@ -282,6 +282,50 @@ Erik reviewed and approved the following decisions:
 - Add diagnostics and repair commands for duplicate local external IDs, repository/base URL migration, ambiguous item matches, and ambiguous comment matches.
 - Update `docs/ARCHITECTURE.md`, phase documentation, and README after decisions are made so they describe implemented behavior rather than the original design intent.
 
+## Created implementation backlog
+
+The approved model is split into the following independently tracked work units. Cross-project Todu core tasks are identified explicitly, and every backend task contains detailed requirements, acceptance criteria, tests, and real dependency IDs.
+
+### Checkpoint safety
+
+- `task-912aa03b` — Harden Forgejo partial-failure cursoring (existing high-priority Forgejo task).
+- `task-d311656e` — Separate Forgejo read and write checkpoints; depends on `task-912aa03b`.
+- `task-58143fe5` — Add sync pull-application acknowledgments (high-priority Todu core task).
+- `task-8e8cf1fb` — Adopt acknowledged pull checkpoints in Forgejo; depends on `task-d311656e` and `task-58143fe5`.
+
+### Field-group reconciliation
+
+- `task-e273fad1` — Define the field-group task sync contract in Todu core.
+- `task-f7cbd4f3` — Apply field-group task sync updates in the Todu daemon; depends on `task-e273fad1` and `task-58143fe5`.
+- `task-a7469dad` — Persist Forgejo field-group snapshots.
+- `task-2a38497e` — Reconcile Forgejo title and description; depends on `task-a7469dad` and `task-f7cbd4f3`.
+- `task-203d6426` — Reconcile Forgejo status and lifecycle; depends on `task-a7469dad` and `task-f7cbd4f3`.
+- `task-cc1b45d5` — Reconcile Forgejo priority and labels; depends on `task-a7469dad` and `task-f7cbd4f3`.
+- `task-28740f3a` — Make Forgejo assignee replacement safe; depends on `task-a7469dad` and `task-f7cbd4f3`.
+
+### Comment conflicts
+
+- `task-94c3037c` — Track note update timestamps for sync in Todu core.
+- `task-58c0baf9` — Reconcile Forgejo comment edit conflicts; depends on `task-94c3037c` and `task-58143fe5`.
+
+### Deletion handling
+
+- `task-eecc39b2` — Persist Forgejo issue-deletion tombstones.
+- `task-f4d98619` — Handle remote Forgejo issue deletion safely; depends on `task-eecc39b2` and `task-f7cbd4f3`.
+- `task-ddb6c6bb` — Clean links after local task deletion; depends on `task-eecc39b2`.
+
+### Identity and duplicate recovery
+
+- `task-a81fd78b` — Gate metadata-based Forgejo relinking.
+- `task-31131c82` — Add a Forgejo identity migration planner.
+- `task-37bee306` — Apply Forgejo identity migrations; depends on `task-31131c82`, `task-a7469dad`, and `task-eecc39b2`.
+
+### Integration and documentation
+
+- `task-cc85dc05` — Add a disposable Forgejo integration harness.
+- `task-2c3318db` — Test Forgejo conflict and recovery flows; depends on the harness and completed implementation tasks.
+- `task-427a2838` — Align Forgejo architecture and operator docs; depends on `task-2c3318db`.
+
 ## Acceptance-criteria traceability
 
 - Current issue-sync behavior and gaps are documented in the linking, field mapping, lifecycle, conflict, cursor, and capability sections.
