@@ -264,7 +264,7 @@ export function createHttpForgejoIssueClient(
         }
       }
 
-      if (items.length < limit || (itemKey && items.length > 0 && addedCount === 0)) {
+      if (items.length === 0 || (itemKey && items.length > 0 && addedCount === 0)) {
         break;
       }
 
