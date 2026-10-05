@@ -242,15 +242,17 @@ Persist the last mirrored normalized body and timestamps for both sides. Add loc
 
 Continue using structured provenance as canonical comment identity. Attribution and body matching should be legacy recovery only. If multiple candidates match, skip and emit a repair diagnostic instead of selecting the lowest comment ID.
 
-## Open decisions for Erik
+## Approved decisions
 
-1. Should assignee sync remain bidirectional, as introduced by the v3 actor rollout, or return to the architecture's import-only policy? Recommendation: bidirectional only with complete actor mapping and explicit empty-list support.
-2. Should unique exact metadata be allowed to auto-link an unlinked task, or should it produce an operator-approved repair candidate? Recommendation: require explicit identity by default.
-3. What should happen when a remote issue is hard-deleted? Recommendation: cancel locally and tombstone the link; never recreate automatically.
-4. Is remote-wins acceptable when a true two-sided field-group conflict has equal or missing timestamps? Recommendation: yes, with a diagnostic.
-5. Should malformed remote reserved labels be repaired during pull even for a pull-only binding? Recommendation: no writes in pull-only; report normalization drift. In bidirectional mode, repair on the subsequent push without requiring an unrelated local edit.
-6. Is a sync-provider API change acceptable to acknowledge host-side application before advancing cursors? Recommendation: yes; use overlap replay as an interim plugin-only mitigation.
-7. Should repository or Forgejo base URL changes preserve identity through a migration command, or intentionally create a new binding namespace? Recommendation: provide an explicit migration command and never infer migration automatically.
+Erik reviewed and approved the following decisions:
+
+1. **Checkpoints:** Keep separate issue-pull, comment-pull, and push-success checkpoints. Push must never advance a pull checkpoint. Use bounded overlap replay until the sync-provider API can acknowledge successful host application before committing pull progress.
+2. **Conflicts:** Use last-mirrored snapshots and three-way reconciliation for content, workflow, classification, assignment, and individual comments. When both sides changed differently, compare timestamps; remote wins equal or missing timestamps, and every true conflict receives a diagnostic.
+3. **Assignees:** Keep assignee sync bidirectional, but push only with complete Forgejo actor mappings. An explicitly empty mapped set clears remote assignees; any incomplete mapping preserves the remote set and emits a warning.
+4. **Remote deletion:** A confirmed remote issue deletion cancels the Todu task and creates a tombstone that prevents automatic recreation. An ambiguous 404 blocks that item for review instead of being treated as deletion.
+5. **Metadata relinking:** Treat exact metadata matches as recovery candidates rather than identity. Automatic metadata relinking is disabled by default and may be enabled explicitly per binding; external IDs, source URLs, and durable links remain authoritative.
+6. **Reserved-label normalization:** Pull-only bindings normalize imported Todu values and report drift without writing remotely. Bidirectional bindings schedule Forgejo repair to one valid status and priority label without waiting for an unrelated local edit. Forgejo open/closed state remains authoritative.
+7. **Identity migration:** Provide an explicit, paused-binding migration command for base URL, owner, or repository changes. It is dry-run by default, detects collisions, backs up state, updates all related identities and links together, and never infers migrations automatically.
 
 ## Recommended follow-up work
 
@@ -284,4 +286,4 @@ Continue using structured provenance as canonical comment identity. Attribution 
 
 - Current issue-sync behavior and gaps are documented in the linking, field mapping, lifecycle, conflict, cursor, and capability sections.
 - The proposed model covers canonical links, field mappings, lifecycle changes, duplicate policy, conflict handling, and failure checkpoints.
-- Open decisions and prioritized implementation follow-ups are listed for Erik's review.
+- Previously open decisions were reviewed and approved by Erik, and prioritized implementation follow-ups are recorded.
