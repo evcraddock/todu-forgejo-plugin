@@ -277,7 +277,7 @@ Keep the same logical stores as the GitHub plugin:
 
 - `item_links`: binding id, task id, issue number, external id
 - `comment_links`: binding id, task id, note id, issue number, comment id
-- `binding_runtime_state`: cursor, retry, timestamps, last error
+- `binding_runtime_state`: issue/comment pull cursors, push-success timestamp, retry state, and failure diagnostics
 
 ## Sync Scope
 
@@ -507,9 +507,15 @@ Comments no longer remain the exception. Mirrored comment deletes do not propaga
 
 ### Cursor and failure checkpoint semantics
 
-A pull captures its issue-read boundary before issue discovery: the pull-start time rounded down to a whole second, minus one second. This bounded overlap replays updates in the start second even on servers with exclusive, second-precision `since` filtering; it does not protect against arbitrary server/client clock skew. A successful pull records this boundary as `cursor`, not its completion time, and clears retry state and pending comment issues. If issue discovery/link updates finish but comment reads fail, the provider records the same boundary with `lastFailurePhase = pull:comments` and retains `pendingCommentIssueNumbers` for comment retry. On partial failure, `lastProgressAt` records the actual issue-discovery completion time, independently of the conservative cursor; on success, it records the pull completion time. The next retry lists issues from the boundary and fetches pending comments using the previous `lastSuccessAt`, preserving both changes made during discovery and earlier unread comments. Failures before completed issue discovery leave the cursor unchanged. Runtime diagnostics (`lastError`, `lastProgressAt`, `lastFailurePhase`, `lastFailureCursor`, and `pendingCommentIssueNumbers`) explain why a cursor did or did not move.
+Runtime state keeps separate `issuePullCursor`, `commentPullCursor`, and `lastPushSuccessAt` values. Issue and comment `since` filters use only their respective pull cursors, never a push timestamp or the aggregate `lastSuccessAt`. Push success records `lastPushSuccessAt` without changing either pull cursor. `lastSuccessAt` remains an aggregate success diagnostic, not a read checkpoint.
 
-The current runtime still shares success state between pull and push: push success updates `cursor` and `lastSuccessAt`, and provider pull success is recorded before host application. The safe pull-start boundary does not resolve those separate risks. Separate issue/comment/push checkpoints and post-application acknowledgment are tracked in `task-d311656e` and `task-8e8cf1fb`, respectively.
+A pull captures its read boundary before issue discovery: the pull-start time rounded down to a whole second, minus one second. This bounded overlap replays updates in the start second even on servers with exclusive, second-precision `since` filtering; it does not protect against arbitrary server/client clock skew. A successful pull records the boundary in both pull cursors and clears retry state and pending comment issues. Comment discovery queries all linked issues, even when their issue timestamps are unchanged or no comment checkpoint exists yet. Replayed records retain their external identities and existing links.
+
+If issue discovery/link updates finish but comment reads fail, only `issuePullCursor` advances to the boundary; `commentPullCursor` remains unchanged and `pendingCommentIssueNumbers` retains the issues needing comment retry. `lastFailurePhase = pull:comments` and `lastFailureCursor` report the issue-read checkpoint. On partial failure, `lastProgressAt` records the actual discovery-completion time; on success, it records completion time. Failures before completed issue discovery report `pull:issues` and leave both cursors unchanged. Push failures report their push phase without claiming read progress. A successful push cannot clear pending comment work or unresolved pull retry/error diagnostics; the binding remains error/blocked until a successful pull repairs them. Retry/backoff remains binding-scoped, and successful operations without outstanding pull failures reset it.
+
+`runtime-state.json` records use `checkpointVersion = 1` for split checkpoints. Unversioned legacy records retain their original shared values in `legacyCheckpoint`, along with retry state and failure diagnostics. Because legacy success may represent a push, migration starts both pull cursors and the unknown push-success timestamp at null, requiring a conservative reread. Normal state saves persist the migration; subsequent loads preserve split cursors, including explicit null values. See [Forgejo Storage Migration](FORGEJO-STORAGE-MIGRATION.md) for upgrade behavior.
+
+Provider pull success is still recorded before host application. Post-application acknowledgment remains a separate follow-up in `task-8e8cf1fb`; checkpoint separation and bounded overlap do not guarantee replay after every host-application failure.
 
 ## Retry
 
