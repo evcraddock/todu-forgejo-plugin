@@ -275,9 +275,26 @@ Source URL should remain the issue HTML URL:
 
 Keep the same logical stores as the GitHub plugin:
 
-- `item_links`: binding id, task id, issue number, external id
+- `item_links`: binding id, task id, issue number, external id, optional per-field-group mirrored snapshots
 - `comment_links`: binding id, task id, note id, issue number, comment id
 - `binding_runtime_state`: issue/comment pull cursors, push-success timestamp, retry state, and failure diagnostics
+
+### Field-group snapshot storage
+
+Item links can persist an optional `fieldSnapshots` map in `item-links.json`. It uses the published core field-group value types, with independently optional complete values:
+
+| Group            | Stored normalized value                                                      |
+| ---------------- | ---------------------------------------------------------------------------- |
+| `content`        | title and explicit string description                                        |
+| `workflow`       | task status; normalized Forgejo state and status label are derivable from it |
+| `classification` | priority and shared normal-label set                                         |
+| `assignment`     | stable Forgejo assignee identity set                                         |
+
+Content text is preserved verbatim, including an explicitly empty description. Normal labels exclude reserved `status:*`/`priority:*` labels and are deduplicated and sorted without changing case. Assignees are deduplicated and sorted by identity: account ID is authoritative when available, so login/display-name changes do not change that baseline; login-only identities retain their exact login. Host-owned actor mapping is responsible for resolving login-only aliases to account IDs. No identity is inferred from a display name.
+
+Missing groups remain unknown, distinct from known empty descriptions, labels, or assignments. Old links without snapshots remain readable and are not automatically seeded from a timestamp, remote discovery, or a v4 pull acknowledgment. `updateForgejoItemFieldSnapshots` explicitly replaces complete supplied groups while retaining other groups; future reconciliation must call it only after successful mirroring is proven. Metadata-only saves and provisional-to-real task relinking preserve baselines for the same binding and remote identity; replacement with a different remote identity does not inherit them. Explicit snapshot maps on a full link save replace that map. Both stores normalize snapshots, reject incomplete/malformed values, and detach reads/writes to prevent mutation of stored baselines. Atomic file writes retain the last valid snapshot state on replacement failure.
+
+The v4 replay path preserves current field-group baselines rather than restoring older copies captured in a pending batch. This storage foundation does not implement field-group winner selection, schedule new remote writes, or adopt provider API v5. Comment baselines remain in the separate comment-link store.
 
 ## Sync Scope
 

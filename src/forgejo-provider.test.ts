@@ -608,7 +608,10 @@ describe("forgejo provider runtime integration", () => {
 
     await pullAndAcknowledge(provider);
 
-    expect(listCommentsCalls).toEqual([
+    // Link replacement order is store bookkeeping, not a comment-discovery contract.
+    expect(
+      [...listCommentsCalls].sort((left, right) => left.issueNumber - right.issueNumber)
+    ).toEqual([
       { issueNumber: 7, since: expect.any(String) },
       { issueNumber: 8, since: expect.any(String) },
     ]);

@@ -26,6 +26,14 @@ Acknowledged pull checkpoints upgrade unversioned and version 1 `runtime-state.j
 
 Expect extra API reads on the first eligible pull after upgrade. Back up plugin state before deploying the upgrade, and preserve both the checkpoint version marker and legacy archive when inspecting or manually repairing records. Do not copy archived shared or pre-acknowledgment timestamps into the new pull cursor fields. This implementation task does not modify live state, deploy the plugin, or restart a daemon.
 
+## Optional item field-group baselines
+
+`item-links.json` supports an optional `fieldSnapshots` map for content, workflow, classification, and assignment. There is no new file to move and no additional runtime checkpoint-version change. Old links remain readable without snapshots; each missing group stays unknown until later reconciliation explicitly proves and saves a complete mirrored value. The storage foundation does not seed baselines from existing `lastMirroredAt` values or ordinary v4 pulls/acknowledgments.
+
+Snapshot values use published core group types. Labels and stable assignee identities are deduplicated and sorted; an account ID takes precedence over login/display-name metadata, while login-only identities remain exact. Explicit empty values represent deliberately empty content/sets, not missing history. In-memory and file-backed stores share these rules and reject malformed snapshot data instead of silently resetting it. Metadata-only link updates and same-identity task-ID relinking preserve existing baselines. Acknowledgment preserves current baselines rather than reverting to the copies staged earlier.
+
+Protect state backups: content baselines include the mirrored description. Keep snapshots with their binding and external identity during migration/repair. Do not copy baselines onto an unrelated repository or issue, or treat a legacy missing group as an empty value. Field-group reconciliation and winner selection remain separate follow-up tasks.
+
 ## Destination directory
 
 Recommended durable destination paths:
