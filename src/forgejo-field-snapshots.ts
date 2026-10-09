@@ -17,11 +17,12 @@ const normalizers: {
   content: ({ title, description }) => ({ title, description }),
   // Status uniquely determines normalized Forgejo state and status label.
   workflow: ({ status }) => ({ status }),
-  classification: ({ priority, labels }) => ({
-    priority,
-    labels: [...new Set(getNormalForgejoLabels(labels))].sort(),
-  }),
+  classification: ({ priority, labels }) => {
+    assertDenseSnapshotArray("classification", labels);
+    return { priority, labels: [...new Set(getNormalForgejoLabels(labels))].sort() };
+  },
   assignment: ({ assignees }) => {
+    assertDenseSnapshotArray("assignment", assignees);
     const identities = new Map<string, SyncAssigneeIdentity>();
     for (const assignee of assignees) {
       // Account IDs survive login/display-name changes. Login-only identities
@@ -40,6 +41,17 @@ const normalizers: {
     return { assignees: [...identities.keys()].sort().map((key) => identities.get(key)!) };
   },
 };
+
+function assertDenseSnapshotArray(group: SyncTaskFieldGroup, values: unknown[]): void {
+  // Array.every (used by the core validator) skips holes. Missing observations
+  // must not silently become an empty baseline or fail with an unrelated TypeError.
+  for (let index = 0; index < values.length; index++) {
+    if (!Object.hasOwn(values, index))
+      throw new Error(
+        `Invalid Forgejo field snapshot ${group}: sparse arrays are not complete values`
+      );
+  }
+}
 
 export function normalizeForgejoFieldSnapshot<K extends SyncTaskFieldGroup>(
   group: K,

@@ -114,6 +114,8 @@ describe("Forgejo field snapshot normalization", () => {
     [],
     new Map(),
     new Date("2026-03-12T00:00:00Z"),
+    { classification: { priority: "medium", labels: new Array<string>(1) } },
+    { assignment: { assignees: new Array<SyncAssigneeIdentity>(1) } },
     { unknown: {} },
     { content: { title: "Title" } },
     { workflow: { status: "invalid" } },

@@ -226,6 +226,29 @@ describe.each(["memory", "file"] as const)("%s item-link field snapshots", (kind
     expect(store.listAll()).toStrictEqual([updated, relinked]);
   });
 
+  it("rejects sparse label/assignee arrays without replacing known baselines", () => {
+    store.save({ ...link, fieldSnapshots: snapshots });
+    const invalid = [
+      { classification: { priority: "medium" as const, labels: new Array<string>(1) } },
+      {
+        assignment: {
+          assignees: new Array<SyncTaskFieldGroupValues["assignment"]["assignees"][number]>(1),
+        },
+      },
+    ];
+    for (const updates of invalid) {
+      expect(() =>
+        updateForgejoItemFieldSnapshots(store, link.bindingId, link.taskId, updates)
+      ).toThrow("Invalid Forgejo field snapshot");
+      expect(() => store.save({ ...link, fieldSnapshots: updates })).toThrow(
+        "Invalid Forgejo field snapshot"
+      );
+      expect(store.getByTaskId(link.bindingId, link.taskId)?.fieldSnapshots).toStrictEqual(
+        snapshots
+      );
+    }
+  });
+
   it("cannot initialize baselines for an unlinked task", () => {
     expect(() =>
       updateForgejoItemFieldSnapshots(store, link.bindingId, link.taskId, {
