@@ -313,6 +313,9 @@ export function createForgejoSyncProvider(
 
       let failureProgress: ForgejoRuntimeFailureProgress | undefined;
       try {
+        // Replay the start second even when the server uses exclusive, second-precision
+        // `since` filtering. Never checkpoint past changes made during issue discovery.
+        const pullCursor = new Date(Math.floor(Date.now() / 1000) * 1000 - 1000).toISOString();
         loopPreventionStore.clearExpired(DEFAULT_LOOP_PREVENTION_MAX_AGE_MS);
         const pendingCommentIssueNumbers = runtimeState.pendingCommentIssueNumbers ?? [];
 
@@ -341,12 +344,11 @@ export function createForgejoSyncProvider(
             ...linkedCommentIssueNumbers,
           ]),
         ];
-        const progressCursor = new Date().toISOString();
         if (commentIssueNumbers.length > 0) {
           failureProgress = {
             phase: "pull:comments",
-            cursor: progressCursor,
-            progressAt: progressCursor,
+            cursor: pullCursor,
+            progressAt: new Date().toISOString(),
             pendingCommentIssueNumbers: commentIssueNumbers,
           };
         }
@@ -382,8 +384,7 @@ export function createForgejoSyncProvider(
                 },
               });
 
-        const cursor = new Date().toISOString();
-        runtimeStore.save(recordForgejoSuccess(runtimeState, cursor));
+        runtimeStore.save(recordForgejoSuccess(runtimeState, pullCursor));
         bindingStatuses.set(
           binding.id,
           updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id))

@@ -70,6 +70,45 @@ describe("forgejo runtime", () => {
     expect(failed.pendingCommentIssueNumbers).toEqual([7, 8]);
   });
 
+  it("preserves the successful comment checkpoint and pending context across failures", () => {
+    const initial = {
+      ...createInitialForgejoRuntimeState(createIntegrationBindingId("binding-1")),
+      cursor: "2026-03-12T00:00:00.000Z",
+      lastSuccessAt: "2026-03-12T00:00:00.000Z",
+    };
+    const failed = recordForgejoFailure(
+      initial,
+      "comment pull failed",
+      { initialSeconds: 5, maxSeconds: 300 },
+      new Date("2026-03-12T00:02:03.000Z"),
+      {
+        phase: "pull:comments",
+        cursor: "2026-03-12T00:01:59.000Z",
+        progressAt: "2026-03-12T00:02:02.000Z",
+        pendingCommentIssueNumbers: [7, 8],
+      }
+    );
+    expect(failed.lastSuccessAt).toBe(initial.lastSuccessAt);
+    expect(failed.lastAttemptAt).toBe("2026-03-12T00:02:03.000Z");
+    expect(failed.nextRetryAt).toBe("2026-03-12T00:02:08.000Z");
+
+    const retryFailure = recordForgejoFailure(
+      failed,
+      "issue discovery failed",
+      { initialSeconds: 5, maxSeconds: 300 },
+      new Date("2026-03-12T00:02:08.000Z")
+    );
+    expect(retryFailure).toMatchObject({
+      cursor: failed.cursor,
+      lastSuccessAt: initial.lastSuccessAt,
+      lastProgressAt: failed.lastProgressAt,
+      lastFailureCursor: failed.cursor,
+      pendingCommentIssueNumbers: [7, 8],
+      retryAttempt: 2,
+      nextRetryAt: "2026-03-12T00:02:18.000Z",
+    });
+  });
+
   it("checks retry eligibility against nextRetryAt", () => {
     const bindingId = createIntegrationBindingId("binding-1");
     const state = {
