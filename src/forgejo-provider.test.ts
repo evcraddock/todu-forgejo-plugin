@@ -709,7 +709,155 @@ describe("forgejo provider runtime integration", () => {
     expect(state!.retryAttempt).toBe(1);
     expect(state!.lastError).toContain("rate limited");
     expect(state!.nextRetryAt).not.toBeNull();
+    expect(state!.cursor).toBeNull();
+    expect(state!.lastProgressAt).toBeNull();
+    expect(state!.lastFailureCursor).toBeNull();
   });
+
+  it.each([
+    { commentError: "500 unavailable", expectedState: "error" },
+    { commentError: "403 forbidden", expectedState: "blocked" },
+    { commentError: null, expectedState: "idle" },
+  ])(
+    "replays issue changes during discovery when comments finish with $commentError",
+    async ({ commentError, expectedState }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-03-12T00:02:00.750Z"));
+      try {
+        const issueClient = createInMemoryForgejoIssueClient();
+        const binding = createBinding({ strategy: "pull" });
+        const target = {
+          baseUrl: "https://code.example.com",
+          apiBaseUrl: "https://code.example.com/api/v1",
+          owner: "acme",
+          repo: "roadmap",
+        };
+        const observedIssue = {
+          number: 7,
+          externalId: "https://code.example.com/acme/roadmap#7",
+          title: "Observed issue",
+          state: "open" as const,
+          labels: ["status:active"],
+          assignees: [],
+          createdAt: "2026-03-12T00:00:00.000Z",
+          updatedAt: "2026-03-12T00:01:00.000Z",
+        };
+        issueClient.seedIssues(target, [observedIssue]);
+        issueClient.seedComments(target, 7, [
+          {
+            id: 11,
+            issueNumber: 7,
+            body: "Pending comment",
+            createdAt: "2026-03-12T00:01:30.000Z",
+          },
+        ]);
+        const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+        runtimeStore.save({
+          ...createInitialForgejoRuntimeState(binding.id),
+          cursor: "2026-03-12T00:00:00.000Z",
+          lastSuccessAt: "2026-03-12T00:00:00.000Z",
+        });
+
+        const listIssues = issueClient.listIssues.bind(issueClient);
+        const issueSinceValues: Array<string | undefined> = [];
+        let firstDiscovery = true;
+        issueClient.listIssues = async (bindingTarget, options) => {
+          issueSinceValues.push(options?.since);
+          // Model a server with exclusive, second-precision `since` semantics.
+          const snapshot = (await listIssues(bindingTarget, options)).filter(
+            (issue) => !options?.since || Date.parse(issue.updatedAt!) > Date.parse(options.since)
+          );
+          if (firstDiscovery) {
+            firstDiscovery = false;
+            vi.setSystemTime(new Date("2026-03-12T00:02:02.000Z"));
+            // These updates were not present in the completed discovery snapshot.
+            issueClient.seedIssues(target, [
+              {
+                ...observedIssue,
+                title: "Updated during discovery",
+                updatedAt: "2026-03-12T00:02:00Z",
+              },
+              {
+                ...observedIssue,
+                number: 8,
+                externalId: "https://code.example.com/acme/roadmap#8",
+                title: "Created during discovery",
+                updatedAt: "2026-03-12T00:02:01Z",
+              },
+            ]);
+          }
+          return snapshot;
+        };
+        const listComments = issueClient.listComments.bind(issueClient);
+        const commentCalls: Array<{ issueNumber: number; since?: string }> = [];
+        let firstCommentRead = true;
+        issueClient.listComments = async (bindingTarget, issueNumber, options) => {
+          commentCalls.push({ issueNumber, since: options?.since });
+          if (firstCommentRead) {
+            firstCommentRead = false;
+            vi.setSystemTime(new Date("2026-03-12T00:02:03.000Z"));
+            if (commentError) {
+              throw new Error(commentError);
+            }
+          }
+          return listComments(bindingTarget, issueNumber, options);
+        };
+        const provider = createForgejoSyncProvider({
+          issueClient,
+          runtimeStore,
+          retryConfig: { initialSeconds: 5, maxSeconds: 300 },
+        });
+        await provider.initialize({ settings: { baseUrl: target.baseUrl, token: "test-token" } });
+
+        if (commentError) {
+          await expect(provider.pull(binding, project)).rejects.toThrow(commentError);
+        } else {
+          expect((await provider.pull(binding, project)).tasks[0].title).toBe("Observed issue");
+        }
+        const checkpoint = "2026-03-12T00:01:59.000Z";
+        const state = runtimeStore.get(binding.id)!;
+        expect(state.cursor).toBe(checkpoint);
+        expect(provider.getState().bindingStatuses.get(binding.id)?.state).toBe(expectedState);
+        if (commentError) {
+          expect(state).toMatchObject({
+            retryAttempt: 1,
+            lastSuccessAt: "2026-03-12T00:00:00.000Z",
+            lastProgressAt: "2026-03-12T00:02:02.000Z",
+            lastFailurePhase: "pull:comments",
+            lastFailureCursor: checkpoint,
+            pendingCommentIssueNumbers: [7],
+          });
+          expect(state.lastError).toContain(commentError);
+          expect(await provider.pull(binding, project)).toEqual({ tasks: [] });
+          expect(issueSinceValues).toHaveLength(1);
+          vi.setSystemTime(new Date(state.nextRetryAt!));
+        }
+
+        const replay = await provider.pull(binding, project);
+        expect(issueSinceValues.at(-1)).toBe(checkpoint);
+        expect(replay.tasks.map((task) => task.title)).toEqual([
+          "Updated during discovery",
+          "Created during discovery",
+        ]);
+        if (commentError) {
+          expect(replay.comments).toHaveLength(1);
+          expect(commentCalls).toContainEqual({
+            issueNumber: 7,
+            since: "2026-03-12T00:00:00.000Z",
+          });
+        }
+        expect(runtimeStore.get(binding.id)).toMatchObject({
+          retryAttempt: 0,
+          nextRetryAt: null,
+          lastError: null,
+          lastFailurePhase: null,
+          pendingCommentIssueNumbers: [],
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
 
   it("advances safe pull progress and retries pending comments after a comment failure", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
