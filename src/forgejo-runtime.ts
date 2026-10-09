@@ -9,9 +9,21 @@ export type ForgejoRuntimeFailurePhase =
   | "push:issues"
   | "push:comments";
 
+export interface ForgejoPullFailureContext {
+  lastError: string | null;
+  lastFailurePhase: "pull:issues" | "pull:comments" | null;
+  lastFailureCursor: string | null;
+  lastProgressAt: string | null;
+}
+
 export interface ForgejoBindingRuntimeState {
   bindingId: IntegrationBinding["id"];
-  cursor: string | null;
+  checkpointVersion: 1;
+  issuePullCursor: string | null;
+  commentPullCursor: string | null;
+  lastPushSuccessAt: string | null;
+  legacyCheckpoint: { cursor: string | null; lastSuccessAt: string | null } | null;
+  unresolvedPullFailure: ForgejoPullFailureContext | null;
   retryAttempt: number;
   nextRetryAt: string | null;
   lastError: string | null;
@@ -57,7 +69,12 @@ export function createInitialForgejoRuntimeState(
 ): ForgejoBindingRuntimeState {
   return {
     bindingId,
-    cursor: null,
+    checkpointVersion: 1,
+    issuePullCursor: null,
+    commentPullCursor: null,
+    lastPushSuccessAt: null,
+    legacyCheckpoint: null,
+    unresolvedPullFailure: null,
     retryAttempt: 0,
     nextRetryAt: null,
     lastError: null,
@@ -81,14 +98,38 @@ export function computeNextForgejoRetryDelay(
   return Math.min(config.initialSeconds * Math.pow(2, attempt - 1), config.maxSeconds);
 }
 
-export function recordForgejoSuccess(
+function getUnresolvedPullFailure(
+  state: Partial<ForgejoBindingRuntimeState>
+): ForgejoPullFailureContext | null {
+  if (state.unresolvedPullFailure) {
+    return state.unresolvedPullFailure;
+  }
+  const phase = state.lastFailurePhase ?? null;
+  const isPullPhase = phase === "pull:issues" || phase === "pull:comments";
+  // Old issue-discovery failures had no phase. Unknown errors require a pull to
+  // prove recovery, rather than guessing that a successful write repaired them.
+  const unknownError = phase === null && state.lastError != null;
+  if (!isPullPhase && !unknownError && !state.pendingCommentIssueNumbers?.length) {
+    return null;
+  }
+  return {
+    lastError: state.lastError ?? null,
+    lastFailurePhase: isPullPhase ? phase : null,
+    lastFailureCursor: state.lastFailureCursor ?? null,
+    lastProgressAt: state.lastProgressAt ?? null,
+  };
+}
+
+export function recordForgejoPullSuccess(
   state: ForgejoBindingRuntimeState,
-  cursor: string | null,
+  cursor: string,
   now: Date = new Date()
 ): ForgejoBindingRuntimeState {
   return {
     ...state,
-    cursor,
+    issuePullCursor: cursor,
+    commentPullCursor: cursor,
+    unresolvedPullFailure: null,
     retryAttempt: 0,
     nextRetryAt: null,
     lastError: null,
@@ -98,6 +139,34 @@ export function recordForgejoSuccess(
     lastFailurePhase: null,
     lastFailureCursor: null,
     pendingCommentIssueNumbers: [],
+  };
+}
+
+export function recordForgejoPushSuccess(
+  state: ForgejoBindingRuntimeState,
+  now: Date = new Date()
+): ForgejoBindingRuntimeState {
+  const successState = {
+    ...state,
+    lastPushSuccessAt: now.toISOString(),
+    lastSuccessAt: now.toISOString(),
+    lastAttemptAt: now.toISOString(),
+  };
+  // A write cannot repair a failed read. Restore its diagnostics after intervening
+  // push failures, while retaining the binding's current retry/backoff state.
+  const unresolvedPullFailure = getUnresolvedPullFailure(state);
+  if (unresolvedPullFailure) {
+    return { ...successState, ...unresolvedPullFailure, unresolvedPullFailure };
+  }
+
+  return {
+    ...successState,
+    retryAttempt: 0,
+    nextRetryAt: null,
+    lastError: null,
+    lastProgressAt: now.toISOString(),
+    lastFailurePhase: null,
+    lastFailureCursor: null,
   };
 }
 
@@ -111,21 +180,31 @@ export function recordForgejoFailure(
   const nextAttempt = state.retryAttempt + 1;
   const delaySeconds = computeNextForgejoRetryDelay(nextAttempt, config);
   const nextRetryAt = new Date(now.getTime() + delaySeconds * 1000);
-  const cursor = progress && "cursor" in progress ? (progress.cursor ?? null) : state.cursor;
+  const isPullFailure = progress?.phase.startsWith("pull:") ?? true;
+  const cursor =
+    isPullFailure && progress && "cursor" in progress
+      ? (progress.cursor ?? null)
+      : state.issuePullCursor;
   const pendingCommentIssueNumbers =
     progress?.pendingCommentIssueNumbers ?? state.pendingCommentIssueNumbers ?? [];
 
-  return {
+  const failedState: ForgejoBindingRuntimeState = {
     ...state,
-    cursor,
+    issuePullCursor: cursor,
     retryAttempt: nextAttempt,
     nextRetryAt: nextRetryAt.toISOString(),
     lastError: error,
     lastAttemptAt: now.toISOString(),
     lastProgressAt: progress?.progressAt ?? state.lastProgressAt ?? null,
     lastFailurePhase: progress?.phase ?? null,
-    lastFailureCursor: progress ? cursor : state.cursor,
+    lastFailureCursor: isPullFailure ? cursor : null,
     pendingCommentIssueNumbers: [...new Set(pendingCommentIssueNumbers)],
+  };
+  return {
+    ...failedState,
+    unresolvedPullFailure: isPullFailure
+      ? getUnresolvedPullFailure({ ...failedState, unresolvedPullFailure: null })
+      : getUnresolvedPullFailure(state),
   };
 }
 
@@ -202,17 +281,70 @@ export function createFileForgejoBindingRuntimeStore(
         throw new Error(`Invalid Forgejo runtime store at ${storagePath}: invalid state record`);
       }
 
-      const state = entry as Partial<ForgejoBindingRuntimeState> & {
+      const { cursor, ...state } = entry as Partial<ForgejoBindingRuntimeState> & {
         bindingId: IntegrationBinding["id"];
+        cursor?: string | null;
       };
+      if (state.checkpointVersion !== undefined && state.checkpointVersion !== 1) {
+        throw new Error(
+          `Invalid Forgejo runtime store at ${storagePath}: unsupported checkpoint version`
+        );
+      }
+      if (state.unresolvedPullFailure != null) {
+        const failure = state.unresolvedPullFailure;
+        const validPhase =
+          failure.lastFailurePhase === null ||
+          failure.lastFailurePhase === "pull:issues" ||
+          failure.lastFailurePhase === "pull:comments";
+        const validTimestamp = (value: unknown) =>
+          value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
+        if (
+          typeof failure !== "object" ||
+          !validPhase ||
+          (failure.lastError !== null && typeof failure.lastError !== "string") ||
+          !validTimestamp(failure.lastFailureCursor) ||
+          !validTimestamp(failure.lastProgressAt)
+        ) {
+          throw new Error(
+            `Invalid Forgejo runtime store at ${storagePath}: invalid unresolvedPullFailure`
+          );
+        }
+      }
+      const isLegacy = state.checkpointVersion === undefined;
+      if (!isLegacy) {
+        for (const field of [
+          "issuePullCursor",
+          "commentPullCursor",
+          "lastPushSuccessAt",
+        ] as const) {
+          const value = state[field];
+          if (
+            value !== null &&
+            (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
+          ) {
+            throw new Error(`Invalid Forgejo runtime store at ${storagePath}: invalid ${field}`);
+          }
+        }
+      }
 
       return {
+        ...createInitialForgejoRuntimeState(state.bindingId),
         ...state,
+        checkpointVersion: 1,
+        // Legacy success could have been a push. Archive it, but reread remote data
+        // rather than promoting an ambiguous write timestamp to read progress.
+        issuePullCursor: isLegacy ? null : state.issuePullCursor!,
+        commentPullCursor: isLegacy ? null : state.commentPullCursor!,
+        lastPushSuccessAt: isLegacy ? null : state.lastPushSuccessAt!,
+        legacyCheckpoint: isLegacy
+          ? { cursor: cursor ?? null, lastSuccessAt: state.lastSuccessAt ?? null }
+          : (state.legacyCheckpoint ?? null),
         lastProgressAt: state.lastProgressAt ?? null,
         lastFailurePhase: state.lastFailurePhase ?? null,
         lastFailureCursor: state.lastFailureCursor ?? null,
         pendingCommentIssueNumbers: state.pendingCommentIssueNumbers ?? [],
-      } as ForgejoBindingRuntimeState;
+        unresolvedPullFailure: getUnresolvedPullFailure(state),
+      };
     });
   };
 

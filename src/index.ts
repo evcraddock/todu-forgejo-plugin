@@ -135,9 +135,11 @@ export {
   createInMemoryForgejoBindingRuntimeStore,
   recordForgejoBlocked,
   recordForgejoFailure,
-  recordForgejoSuccess,
+  recordForgejoPullSuccess,
+  recordForgejoPushSuccess,
   shouldForgejoRetry,
   type ForgejoBindingRuntimeState,
   type ForgejoBindingRuntimeStore,
   type ForgejoRetryConfig,
+  type ForgejoPullFailureContext,
 } from "@/forgejo-runtime";

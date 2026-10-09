@@ -73,7 +73,8 @@ import {
   createInMemoryForgejoBindingRuntimeStore,
   recordForgejoBlocked,
   recordForgejoFailure,
-  recordForgejoSuccess,
+  recordForgejoPullSuccess,
+  recordForgejoPushSuccess,
   shouldForgejoRetry,
   type ForgejoBindingRuntimeState,
   type ForgejoBindingRuntimeStore,
@@ -329,14 +330,16 @@ export function createForgejoSyncProvider(
           repo: target.repo,
           issueClient,
           linkStore,
-          since: runtimeState.cursor ?? runtimeState.lastSuccessAt ?? undefined,
+          since: runtimeState.issuePullCursor ?? undefined,
           importClosedOnBootstrap: getImportClosedOnBootstrap(binding),
         });
 
-        const commentSince = runtimeState.lastSuccessAt ?? undefined;
-        const linkedCommentIssueNumbers = commentSince
-          ? linkStore.list(binding.id).map((itemLink) => itemLink.issueNumber)
-          : [];
+        const commentSince = runtimeState.commentPullCursor ?? undefined;
+        // Comment discovery is independent of issue updates, even before the first
+        // successful comment pull (for example after a partial pull or migration).
+        const linkedCommentIssueNumbers = linkStore
+          .list(binding.id)
+          .map((itemLink) => itemLink.issueNumber);
         const commentIssueNumbers = [
           ...new Set([
             ...pendingCommentIssueNumbers,
@@ -384,7 +387,7 @@ export function createForgejoSyncProvider(
                 },
               });
 
-        runtimeStore.save(recordForgejoSuccess(runtimeState, pullCursor));
+        runtimeStore.save(recordForgejoPullSuccess(runtimeState, pullCursor));
         bindingStatuses.set(
           binding.id,
           updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id))
@@ -404,7 +407,7 @@ export function createForgejoSyncProvider(
           classification,
           logContext,
           direction: "pull",
-          progress: failureProgress,
+          progress: failureProgress ?? { phase: "pull:issues" },
         });
         throw error;
       }
@@ -555,12 +558,15 @@ export function createForgejoSyncProvider(
           );
         }
 
-        const cursor = new Date().toISOString();
-        runtimeStore.save(recordForgejoSuccess(runtimeState, cursor));
-        bindingStatuses.set(
-          binding.id,
-          updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id))
-        );
+        const successState = recordForgejoPushSuccess(runtimeState);
+        runtimeStore.save(successState);
+        let status = updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id));
+        if (successState.lastError) {
+          status = classifyForgejoSyncError(successState.lastError).retryable
+            ? updateForgejoBindingStatusError(status, successState.lastError)
+            : updateForgejoBindingStatusBlocked(status, successState.lastError);
+        }
+        bindingStatuses.set(binding.id, status);
 
         logger.info("push completed", {
           ...logContext,

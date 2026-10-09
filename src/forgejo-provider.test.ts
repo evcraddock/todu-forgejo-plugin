@@ -295,7 +295,8 @@ describe("forgejo provider runtime integration", () => {
     expect(state).not.toBeNull();
     expect(state!.retryAttempt).toBe(0);
     expect(state!.lastSuccessAt).not.toBeNull();
-    expect(state!.cursor).not.toBeNull();
+    expect(state!.issuePullCursor).not.toBeNull();
+    expect(state!.commentPullCursor).toBe(state!.issuePullCursor);
     expect(state!.lastError).toBeNull();
   });
 
@@ -709,7 +710,9 @@ describe("forgejo provider runtime integration", () => {
     expect(state!.retryAttempt).toBe(1);
     expect(state!.lastError).toContain("rate limited");
     expect(state!.nextRetryAt).not.toBeNull();
-    expect(state!.cursor).toBeNull();
+    expect(state!.issuePullCursor).toBeNull();
+    expect(state!.commentPullCursor).toBeNull();
+    expect(state!.lastFailurePhase).toBe("pull:issues");
     expect(state!.lastProgressAt).toBeNull();
     expect(state!.lastFailureCursor).toBeNull();
   });
@@ -754,7 +757,8 @@ describe("forgejo provider runtime integration", () => {
         const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
         runtimeStore.save({
           ...createInitialForgejoRuntimeState(binding.id),
-          cursor: "2026-03-12T00:00:00.000Z",
+          issuePullCursor: "2026-03-12T00:00:00.000Z",
+          commentPullCursor: "2026-03-12T00:00:00.000Z",
           lastSuccessAt: "2026-03-12T00:00:00.000Z",
         });
 
@@ -816,12 +820,13 @@ describe("forgejo provider runtime integration", () => {
         }
         const checkpoint = "2026-03-12T00:01:59.000Z";
         const state = runtimeStore.get(binding.id)!;
-        expect(state.cursor).toBe(checkpoint);
+        expect(state.issuePullCursor).toBe(checkpoint);
         expect(provider.getState().bindingStatuses.get(binding.id)?.state).toBe(expectedState);
         if (commentError) {
           expect(state).toMatchObject({
             retryAttempt: 1,
             lastSuccessAt: "2026-03-12T00:00:00.000Z",
+            commentPullCursor: "2026-03-12T00:00:00.000Z",
             lastProgressAt: "2026-03-12T00:02:02.000Z",
             lastFailurePhase: "pull:comments",
             lastFailureCursor: checkpoint,
@@ -897,7 +902,8 @@ describe("forgejo provider runtime integration", () => {
     const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
     runtimeStore.save({
       ...createInitialForgejoRuntimeState(binding.id),
-      cursor: "2026-03-12T00:00:00.000Z",
+      issuePullCursor: "2026-03-12T00:00:00.000Z",
+      commentPullCursor: "2026-03-12T00:00:00.000Z",
       lastSuccessAt: "2026-03-12T00:00:00.000Z",
     });
 
@@ -941,15 +947,15 @@ describe("forgejo provider runtime integration", () => {
       lastFailurePhase: "pull:comments",
       pendingCommentIssueNumbers: [7],
     });
-    expect(failedState?.cursor).not.toBe("2026-03-12T00:00:00.000Z");
-    expect(Date.parse(failedState!.cursor!)).toBeGreaterThan(
+    expect(failedState?.issuePullCursor).not.toBe("2026-03-12T00:00:00.000Z");
+    expect(Date.parse(failedState!.issuePullCursor!)).toBeGreaterThan(
       Date.parse("2026-03-12T00:01:00.000Z")
     );
 
     failComments = false;
     const retryResult = await provider.pull(binding, project);
 
-    expect(listIssueSinceValues.at(-1)).toBe(failedState?.cursor);
+    expect(listIssueSinceValues.at(-1)).toBe(failedState?.issuePullCursor);
     expect(retryResult.tasks).toEqual([]);
     expect(retryResult.comments).toHaveLength(1);
     expect(runtimeStore.get(binding.id)).toMatchObject({

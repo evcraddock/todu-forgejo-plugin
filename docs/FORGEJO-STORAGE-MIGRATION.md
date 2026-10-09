@@ -10,6 +10,19 @@ The Forgejo plugin state files are:
 
 The migration script moves only those files. It does not overwrite destination files, leaves unrelated files in the old directory, and removes the old directory only if it becomes empty.
 
+## Runtime checkpoint schema upgrade
+
+The read/write checkpoint split upgrades unversioned `runtime-state.json` records when the plugin reads them. This schema upgrade is independent of moving the storage directory and does not require running the directory-migration script.
+
+- New records contain `checkpointVersion: 1`, `issuePullCursor`, `commentPullCursor`, and `lastPushSuccessAt`.
+- Legacy `cursor` and `lastSuccessAt` values are retained in `legacyCheckpoint`; `lastSuccessAt` also remains an aggregate diagnostic. Legacy timestamps are not trusted as read checkpoints because they may have been advanced by a push.
+- Both pull cursors and the unknown push-success timestamp start at null for legacy records. The first eligible pull rereads repository issues and linked comments without a `since` filter. Existing item/comment links and external identities remain in use; linked closed issues are still imported.
+- Retry count, next retry time, pending comment issue numbers, errors, and failure/progress diagnostics are preserved. An outstanding backoff still delays the reread. Outstanding read diagnostics persist separately as `unresolvedPullFailure` so an intervening push failure cannot erase them. A later push success restores the read error; only successful pull clears it. Legacy errors with no recorded phase are retained conservatively with their phase still unknown, while explicit push-only failures without pending reads remain clearable by a successful push.
+- Reads normalize records in memory without rewriting the file. The next ordinary save persists the upgraded records, and later restarts retain the separate checkpoints and archived legacy values. Unsupported checkpoint versions or malformed split timestamps fail explicitly rather than silently resetting progress.
+- Push-only operation leaves pull cursors null until a real pull succeeds. Push success never advances read progress or clears unresolved pull work.
+
+Expect extra API reads on the first eligible pull after upgrade. Back up plugin state before deploying the upgrade, and preserve both the checkpoint version marker and legacy archive when inspecting or manually repairing records. Do not copy archived shared timestamps into the new pull cursor fields. This implementation task does not modify live state, deploy the plugin, or restart a daemon.
+
 ## Destination directory
 
 Recommended durable destination paths:
