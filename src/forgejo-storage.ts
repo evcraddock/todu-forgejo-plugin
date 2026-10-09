@@ -1,5 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+// Never truncate the last valid state on a failed write. New replay files contain
+// imported content, so keep both temporary and replaced files owner-readable only.
+export function writeForgejoStateFile(storagePath: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(storagePath), { recursive: true });
+  const temporaryPath = `${storagePath}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+      flush: true,
+    });
+    fs.renameSync(temporaryPath, storagePath);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  }
+}
 
 export const FORGEJO_STORAGE_STATE_FILES = [
   "item-links.json",

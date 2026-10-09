@@ -95,6 +95,12 @@ async function createFixture(runtimeStore = createInMemoryForgejoBindingRuntimeS
   return { provider, issueClient, linkStore, runtimeStore, issueSinceValues, commentSinceValues };
 }
 
+async function pullAndAcknowledge(provider: ReturnType<typeof createForgejoSyncProvider>) {
+  const batch = await provider.pull(binding, project);
+  await provider.acknowledgePull(binding, batch.checkpoint, project);
+  return batch;
+}
+
 describe("Forgejo read/write checkpoint isolation", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -104,7 +110,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
 
   it("keeps both pull cursors when issues and comments change between pull and push", async () => {
     const fixture = await createFixture();
-    await fixture.provider.pull(binding, project);
+    await pullAndAcknowledge(fixture.provider);
     const beforePush = fixture.runtimeStore.get(binding.id)!;
     vi.setSystemTime(new Date("2026-03-12T00:02:01.000Z"));
     fixture.issueClient.seedIssues(target, [
@@ -147,7 +153,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
     const fixture = await createFixture();
     fixture.issueClient.seedIssues(target, []);
     fixture.linkStore.remove(binding.id, task.localTaskId);
-    expect(await fixture.provider.pull(binding, project)).toEqual({ tasks: [], comments: [] });
+    expect(await pullAndAcknowledge(fixture.provider)).toMatchObject({ tasks: [], comments: [] });
     vi.setSystemTime(new Date("2026-03-12T00:05:00.000Z"));
     await fixture.provider.push(binding, [], project);
     expect(fixture.runtimeStore.get(binding.id)).toMatchObject({
@@ -180,7 +186,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
     "push success preserves pending pull progress and diagnostics after %s",
     async (error) => {
       const fixture = await createFixture();
-      await fixture.provider.pull(binding, project);
+      await pullAndAcknowledge(fixture.provider);
       fixture.issueClient.seedComments(target, 7, [
         { id: 11, issueNumber: 7, body: "Unread comment", createdAt: "2026-03-12T00:02:01.000Z" },
       ]);
@@ -196,7 +202,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
       await fixture.provider.push(binding, [task], project);
       const pushed = fixture.runtimeStore.get(binding.id)!;
       expect(pushed).toMatchObject({
-        issuePullCursor: "2026-03-12T00:02:59.000Z",
+        issuePullCursor: "2026-03-12T00:01:59.000Z",
         commentPullCursor: "2026-03-12T00:01:59.000Z",
         pendingCommentIssueNumbers: [7],
         retryAttempt: failed.retryAttempt,
@@ -209,7 +215,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
       expect(fixture.provider.getState().bindingStatuses.get(binding.id)?.state).toBe(
         error.startsWith("403") ? "blocked" : "error"
       );
-      const recovered = await fixture.provider.pull(binding, project);
+      const recovered = await pullAndAcknowledge(fixture.provider);
       expect(recovered.tasks).toEqual([]);
       expect(recovered.comments).toHaveLength(1);
       expect(fixture.commentSinceValues.at(-1)).toBe("2026-03-12T00:01:59.000Z");
@@ -226,7 +232,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
     try {
       const storagePath = path.join(dir, "runtime-state.json");
       const fixture = await createFixture(createFileForgejoBindingRuntimeStore(storagePath));
-      await fixture.provider.pull(binding, project);
+      await pullAndAcknowledge(fixture.provider);
       fixture.issueClient.listIssues = async () => {
         throw new Error("403 forbidden issue reads");
       };
@@ -268,7 +274,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
       expect(provider.getState().bindingStatuses.get(binding.id)?.state).toBe("blocked");
       expect(pushed.unresolvedPullFailure).not.toBeNull();
       fixture.issueClient.listIssues = async () => [];
-      await provider.pull(binding, project);
+      await pullAndAcknowledge(provider);
       expect(runtimeStore.get(binding.id)).toMatchObject({
         unresolvedPullFailure: null,
         lastError: null,
@@ -310,7 +316,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
         retryAttempt: 1,
       });
       expect(fixture.issueSinceValues).toEqual([]);
-      await fixture.provider.pull(binding, project);
+      await pullAndAcknowledge(fixture.provider);
       expect(fixture.runtimeStore.get(binding.id)?.unresolvedPullFailure).toBeNull();
       expect(fixture.provider.getState().bindingStatuses.get(binding.id)?.state).toBe("idle");
     } finally {
@@ -341,9 +347,9 @@ describe("Forgejo read/write checkpoint isolation", () => {
       }
       return snapshot;
     };
-    expect((await fixture.provider.pull(binding, project)).comments).toEqual([]);
-    expect((await fixture.provider.pull(binding, project)).comments).toHaveLength(1);
-    expect((await fixture.provider.pull(binding, project)).comments).toHaveLength(1);
+    expect((await pullAndAcknowledge(fixture.provider)).comments).toEqual([]);
+    expect((await pullAndAcknowledge(fixture.provider)).comments).toHaveLength(1);
+    expect((await pullAndAcknowledge(fixture.provider)).comments).toHaveLength(1);
     expect(fixture.provider.getState().commentLinks).toHaveLength(1);
     expect(fixture.provider.getState().commentLinks[0].forgejoCommentId).toBe(11);
   });
@@ -369,7 +375,7 @@ describe("Forgejo read/write checkpoint isolation", () => {
       const runtimeStore = createFileForgejoBindingRuntimeStore(storagePath);
       const migrated = runtimeStore.get(binding.id)!;
       expect(migrated).toMatchObject({
-        checkpointVersion: 1,
+        checkpointVersion: 2,
         issuePullCursor: null,
         commentPullCursor: null,
         lastPushSuccessAt: null,
@@ -395,10 +401,13 @@ describe("Forgejo read/write checkpoint isolation", () => {
           createdAt: "2026-03-12T00:01:30.000Z",
         },
       ]);
-      expect(await fixture.provider.pull(binding, project)).toEqual({ tasks: [] });
+      expect(await fixture.provider.pull(binding, project)).toEqual({
+        tasks: [],
+        checkpoint: null,
+      });
       expect(fixture.issueSinceValues).toEqual([]);
       vi.setSystemTime(new Date(legacy.nextRetryAt));
-      const result = await fixture.provider.pull(binding, project);
+      const result = await pullAndAcknowledge(fixture.provider);
       expect(result.tasks[0].status).toBe("done");
       expect(result.comments).toHaveLength(1);
       expect(fixture.issueSinceValues.at(-1)).toBeUndefined();

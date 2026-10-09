@@ -71,7 +71,7 @@ describe("forgejo runtime", () => {
       }
     );
 
-    expect(failed.issuePullCursor).toBe("2026-03-12T00:01:00.000Z");
+    expect(failed.issuePullCursor).toBeNull();
     expect(failed.commentPullCursor).toBeNull();
     expect(failed.lastProgressAt).toBe("2026-03-12T00:01:00.000Z");
     expect(failed.lastFailurePhase).toBe("pull:comments");
@@ -261,7 +261,7 @@ describe("forgejo runtime checkpoint migration", () => {
     expect(fs.readFileSync(storagePath, "utf8")).toBe(raw);
   });
 
-  it("preserves split checkpoints and archives when another legacy binding is saved", () => {
+  it("preserves acknowledged split checkpoints and archives when another legacy binding is saved", () => {
     const current = {
       ...createInitialForgejoRuntimeState(createIntegrationBindingId("current")),
       issuePullCursor: "2026-03-12T00:05:00.000Z",
@@ -337,6 +337,71 @@ describe("forgejo runtime checkpoint migration", () => {
     ).toBeNull();
   });
 
+  it("archives v1 pre-application read checkpoints while preserving push success and backoff", () => {
+    const v1 = {
+      ...createInitialForgejoRuntimeState(createIntegrationBindingId("pre-ack")),
+      checkpointVersion: 1,
+      issuePullCursor: "2026-03-12T00:05:00.000Z",
+      commentPullCursor: "2026-03-12T00:04:00.000Z",
+      lastPushSuccessAt: "2026-03-12T00:06:00.000Z",
+      lastSuccessAt: "2026-03-12T00:06:00.000Z",
+      retryAttempt: 2,
+      nextRetryAt: "2026-03-12T00:07:00.000Z",
+      lastError: "500 comment read failed",
+      lastFailurePhase: "pull:comments",
+      pendingCommentIssueNumbers: [7],
+    };
+    fs.writeFileSync(storagePath, JSON.stringify([v1]));
+    const store = createFileForgejoBindingRuntimeStore(storagePath);
+    const migrated = store.get(v1.bindingId)!;
+    expect(migrated).toMatchObject({
+      checkpointVersion: 2,
+      issuePullCursor: null,
+      commentPullCursor: null,
+      pendingPull: null,
+      lastAcknowledgedPull: null,
+      preAcknowledgmentCheckpoint: {
+        issuePullCursor: v1.issuePullCursor,
+        commentPullCursor: v1.commentPullCursor,
+      },
+      lastPushSuccessAt: v1.lastPushSuccessAt,
+      lastSuccessAt: v1.lastSuccessAt,
+      retryAttempt: v1.retryAttempt,
+      nextRetryAt: v1.nextRetryAt,
+      lastError: v1.lastError,
+      pendingCommentIssueNumbers: [7],
+    });
+    store.save(migrated);
+    expect(createFileForgejoBindingRuntimeStore(storagePath).get(v1.bindingId)).toEqual(migrated);
+  });
+
+  it("rejects malformed durable acknowledgment data without changing the file", () => {
+    const state = createInitialForgejoRuntimeState(createIntegrationBindingId("invalid-ack"));
+    for (const invalid of [
+      { pendingPull: {} },
+      { lastAcknowledgedPull: "not-a-checkpoint" },
+      {
+        pendingPull: {
+          checkpoint: { id: "batch", scope: "scope" },
+          issueCursor: "invalid",
+          commentCursor: "2026-03-12T00:00:00Z",
+          result: { tasks: [], comments: [] },
+          itemUpserts: [],
+          itemRemovals: [],
+          commentUpserts: [],
+          commentRemovals: [],
+        },
+      },
+    ]) {
+      const raw = JSON.stringify([{ ...state, ...invalid }]);
+      fs.writeFileSync(storagePath, raw);
+      expect(() => createFileForgejoBindingRuntimeStore(storagePath).listAll()).toThrow(
+        "Invalid Forgejo runtime store"
+      );
+      expect(fs.readFileSync(storagePath, "utf8")).toBe(raw);
+    }
+  });
+
   it("allows a successful push to clear a known legacy push-only failure", () => {
     const bindingId = createIntegrationBindingId("legacy-push-error");
     fs.writeFileSync(
@@ -373,7 +438,7 @@ describe("forgejo runtime checkpoint migration", () => {
   });
 
   it.each([
-    { checkpointVersion: 2 },
+    { checkpointVersion: 3 },
     {
       checkpointVersion: 1,
       issuePullCursor: "invalid timestamp",

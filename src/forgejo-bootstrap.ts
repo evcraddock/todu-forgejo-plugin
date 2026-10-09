@@ -70,6 +70,7 @@ export async function bootstrapForgejoIssuesToTasks(input: {
   linkStore: ForgejoItemLinkStore;
   since?: string;
   importClosedOnBootstrap?: boolean;
+  previouslyDiscoveredIssueNumbers?: readonly number[];
 }): Promise<ForgejoBootstrapImportResult> {
   const issues = await input.issueClient.listIssues(
     {
@@ -95,7 +96,12 @@ export async function bootstrapForgejoIssuesToTasks(input: {
     }
 
     const existingLink = input.linkStore.getByIssueNumber(input.binding.id, issue.number);
-    if (!existingLink && issue.state !== "open" && !shouldImportClosedIssuesOnBootstrap) {
+    if (
+      !existingLink &&
+      issue.state !== "open" &&
+      !shouldImportClosedIssuesOnBootstrap &&
+      !input.previouslyDiscoveredIssueNumbers?.includes(issue.number)
+    ) {
       continue;
     }
 

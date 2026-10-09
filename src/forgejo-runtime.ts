@@ -1,24 +1,37 @@
 import fs from "node:fs";
-import path from "node:path";
-
 import type { IntegrationBinding } from "@todu/core";
+
+import {
+  isForgejoPullCheckpoint,
+  validateForgejoPendingPull,
+  type ForgejoPendingPull,
+  type ForgejoPullCheckpoint,
+} from "@/forgejo-pull-checkpoint";
+import { writeForgejoStateFile } from "@/forgejo-storage";
 
 export type ForgejoRuntimeFailurePhase =
   | "pull:issues"
   | "pull:comments"
+  | "pull:acknowledgment"
   | "push:issues"
   | "push:comments";
 
 export interface ForgejoPullFailureContext {
   lastError: string | null;
-  lastFailurePhase: "pull:issues" | "pull:comments" | null;
+  lastFailurePhase: "pull:issues" | "pull:comments" | "pull:acknowledgment" | null;
   lastFailureCursor: string | null;
   lastProgressAt: string | null;
 }
 
 export interface ForgejoBindingRuntimeState {
   bindingId: IntegrationBinding["id"];
-  checkpointVersion: 1;
+  checkpointVersion: 2;
+  pendingPull: ForgejoPendingPull | null;
+  lastAcknowledgedPull: ForgejoPullCheckpoint | null;
+  preAcknowledgmentCheckpoint: {
+    issuePullCursor: string | null;
+    commentPullCursor: string | null;
+  } | null;
   issuePullCursor: string | null;
   commentPullCursor: string | null;
   lastPushSuccessAt: string | null;
@@ -69,7 +82,10 @@ export function createInitialForgejoRuntimeState(
 ): ForgejoBindingRuntimeState {
   return {
     bindingId,
-    checkpointVersion: 1,
+    checkpointVersion: 2,
+    pendingPull: null,
+    lastAcknowledgedPull: null,
+    preAcknowledgmentCheckpoint: null,
     issuePullCursor: null,
     commentPullCursor: null,
     lastPushSuccessAt: null,
@@ -99,13 +115,14 @@ export function computeNextForgejoRetryDelay(
 }
 
 function getUnresolvedPullFailure(
-  state: Partial<ForgejoBindingRuntimeState>
+  state: Omit<Partial<ForgejoBindingRuntimeState>, "checkpointVersion">
 ): ForgejoPullFailureContext | null {
   if (state.unresolvedPullFailure) {
     return state.unresolvedPullFailure;
   }
   const phase = state.lastFailurePhase ?? null;
-  const isPullPhase = phase === "pull:issues" || phase === "pull:comments";
+  const isPullPhase =
+    phase === "pull:issues" || phase === "pull:comments" || phase === "pull:acknowledgment";
   // Old issue-discovery failures had no phase. Unknown errors require a pull to
   // prove recovery, rather than guessing that a successful write repaired them.
   const unknownError = phase === null && state.lastError != null;
@@ -190,7 +207,7 @@ export function recordForgejoFailure(
 
   const failedState: ForgejoBindingRuntimeState = {
     ...state,
-    issuePullCursor: cursor,
+    // Discovery is diagnostic progress, not proof of host application.
     retryAttempt: nextAttempt,
     nextRetryAt: nextRetryAt.toISOString(),
     lastError: error,
@@ -244,16 +261,16 @@ export function createInMemoryForgejoBindingRuntimeStore(): ForgejoBindingRuntim
   return {
     get(bindingId): ForgejoBindingRuntimeState | null {
       const state = states.get(bindingId);
-      return state ? { ...state } : null;
+      return state ? structuredClone(state) : null;
     },
     save(state): void {
-      states.set(state.bindingId, { ...state });
+      states.set(state.bindingId, structuredClone(state));
     },
     remove(bindingId): void {
       states.delete(bindingId);
     },
     listAll(): ForgejoBindingRuntimeState[] {
-      return [...states.values()].map((state) => ({ ...state }));
+      return [...states.values()].map((state) => structuredClone(state));
     },
   };
 }
@@ -281,11 +298,19 @@ export function createFileForgejoBindingRuntimeStore(
         throw new Error(`Invalid Forgejo runtime store at ${storagePath}: invalid state record`);
       }
 
-      const { cursor, ...state } = entry as Partial<ForgejoBindingRuntimeState> & {
+      const { cursor, ...state } = entry as Omit<
+        Partial<ForgejoBindingRuntimeState>,
+        "checkpointVersion"
+      > & {
         bindingId: IntegrationBinding["id"];
+        checkpointVersion?: number;
         cursor?: string | null;
       };
-      if (state.checkpointVersion !== undefined && state.checkpointVersion !== 1) {
+      if (
+        state.checkpointVersion !== undefined &&
+        state.checkpointVersion !== 1 &&
+        state.checkpointVersion !== 2
+      ) {
         throw new Error(
           `Invalid Forgejo runtime store at ${storagePath}: unsupported checkpoint version`
         );
@@ -295,7 +320,8 @@ export function createFileForgejoBindingRuntimeStore(
         const validPhase =
           failure.lastFailurePhase === null ||
           failure.lastFailurePhase === "pull:issues" ||
-          failure.lastFailurePhase === "pull:comments";
+          failure.lastFailurePhase === "pull:comments" ||
+          failure.lastFailurePhase === "pull:acknowledgment";
         const validTimestamp = (value: unknown) =>
           value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
         if (
@@ -311,6 +337,24 @@ export function createFileForgejoBindingRuntimeStore(
         }
       }
       const isLegacy = state.checkpointVersion === undefined;
+      const isAcknowledged = state.checkpointVersion === 2;
+      if (isAcknowledged) {
+        try {
+          if (state.pendingPull === undefined || state.lastAcknowledgedPull === undefined)
+            throw new Error("missing acknowledgment state");
+          if (state.pendingPull !== null)
+            validateForgejoPendingPull(state.pendingPull, state.bindingId);
+          if (
+            state.lastAcknowledgedPull !== null &&
+            !isForgejoPullCheckpoint(state.lastAcknowledgedPull)
+          )
+            throw new Error("invalid lastAcknowledgedPull");
+        } catch (error) {
+          throw new Error(`Invalid Forgejo runtime store at ${storagePath}: ${String(error)}`, {
+            cause: error,
+          });
+        }
+      }
       if (!isLegacy) {
         for (const field of [
           "issuePullCursor",
@@ -330,11 +374,19 @@ export function createFileForgejoBindingRuntimeStore(
       return {
         ...createInitialForgejoRuntimeState(state.bindingId),
         ...state,
-        checkpointVersion: 1,
-        // Legacy success could have been a push. Archive it, but reread remote data
-        // rather than promoting an ambiguous write timestamp to read progress.
-        issuePullCursor: isLegacy ? null : state.issuePullCursor!,
-        commentPullCursor: isLegacy ? null : state.commentPullCursor!,
+        checkpointVersion: 2,
+        pendingPull: isAcknowledged ? state.pendingPull! : null,
+        lastAcknowledgedPull: isAcknowledged ? state.lastAcknowledgedPull! : null,
+        preAcknowledgmentCheckpoint:
+          state.checkpointVersion === 1
+            ? {
+                issuePullCursor: state.issuePullCursor!,
+                commentPullCursor: state.commentPullCursor!,
+              }
+            : (state.preAcknowledgmentCheckpoint ?? null),
+        // Neither old shared progress nor v1 read progress proved host persistence.
+        issuePullCursor: isAcknowledged ? state.issuePullCursor! : null,
+        commentPullCursor: isAcknowledged ? state.commentPullCursor! : null,
         lastPushSuccessAt: isLegacy ? null : state.lastPushSuccessAt!,
         legacyCheckpoint: isLegacy
           ? { cursor: cursor ?? null, lastSuccessAt: state.lastSuccessAt ?? null }
@@ -349,8 +401,7 @@ export function createFileForgejoBindingRuntimeStore(
   };
 
   const writeStates = (states: ForgejoBindingRuntimeState[]): void => {
-    fs.mkdirSync(path.dirname(storagePath), { recursive: true });
-    fs.writeFileSync(storagePath, `${JSON.stringify(states, null, 2)}\n`, "utf8");
+    writeForgejoStateFile(storagePath, states);
   };
 
   return {

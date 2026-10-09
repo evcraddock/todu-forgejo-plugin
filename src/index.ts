@@ -128,6 +128,7 @@ export {
   type ForgejoSyncErrorClassification,
   type ForgejoSyncProvider,
 } from "@/forgejo-provider";
+export type { ForgejoPendingPull, ForgejoPullCheckpoint } from "@/forgejo-pull-checkpoint";
 export {
   computeNextForgejoRetryDelay,
   createFileForgejoBindingRuntimeStore,
