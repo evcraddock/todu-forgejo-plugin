@@ -3,6 +3,10 @@ import fs from "node:fs";
 import type { IntegrationBinding, Task } from "@todu/core";
 
 import { writeForgejoStateFile } from "@/forgejo-storage";
+import {
+  normalizeForgejoFieldSnapshots,
+  type ForgejoFieldSnapshots,
+} from "@/forgejo-field-snapshots";
 import type { ForgejoIssue } from "@/forgejo-client";
 import { createImportedTaskId } from "@/forgejo-ids";
 import { formatForgejoIssueExternalId } from "@/forgejo-ids";
@@ -13,6 +17,7 @@ export interface ForgejoItemLink {
   issueNumber: number;
   externalId: string;
   lastMirroredAt?: string;
+  fieldSnapshots?: ForgejoFieldSnapshots;
 }
 
 export interface ForgejoItemLinkStore {
@@ -27,6 +32,44 @@ export interface ForgejoItemLinkStore {
   remove(bindingId: IntegrationBinding["id"], taskId: Task["id"]): void;
 }
 
+function prepareForgejoItemLink(
+  link: ForgejoItemLink,
+  existing?: ForgejoItemLink
+): ForgejoItemLink {
+  const stored = structuredClone(link);
+  const sameIdentity =
+    existing !== undefined &&
+    existing.issueNumber === link.issueNumber &&
+    existing.externalId === link.externalId;
+  const snapshots =
+    link.fieldSnapshots !== undefined
+      ? link.fieldSnapshots
+      : sameIdentity
+        ? existing.fieldSnapshots
+        : undefined;
+  delete stored.fieldSnapshots;
+  if (snapshots !== undefined) stored.fieldSnapshots = normalizeForgejoFieldSnapshots(snapshots);
+  return stored;
+}
+
+// Future reconciliation calls this only once the complete group is proven mirrored.
+// This storage operation deliberately does not infer baselines or choose a winner.
+export function updateForgejoItemFieldSnapshots(
+  store: ForgejoItemLinkStore,
+  bindingId: IntegrationBinding["id"],
+  taskId: Task["id"],
+  updates: ForgejoFieldSnapshots
+): void {
+  const link = store.getByTaskId(bindingId, taskId);
+  if (!link)
+    throw new Error(
+      `Cannot update Forgejo field snapshots: task ${taskId} is not linked in binding ${bindingId}`
+    );
+  const normalized = normalizeForgejoFieldSnapshots(updates);
+  if (Object.keys(normalized).length === 0) return;
+  store.save({ ...link, fieldSnapshots: { ...link.fieldSnapshots, ...normalized } });
+}
+
 export function createInMemoryForgejoItemLinkStore(): ForgejoItemLinkStore {
   const links = new Map<string, ForgejoItemLink>();
 
@@ -37,10 +80,10 @@ export function createInMemoryForgejoItemLinkStore(): ForgejoItemLinkStore {
 
   return {
     getByTaskId(bindingId, taskId): ForgejoItemLink | null {
-      return links.get(getTaskKey(bindingId, taskId)) ?? null;
+      return structuredClone(links.get(getTaskKey(bindingId, taskId)) ?? null);
     },
     getByIssueNumber(bindingId, issueNumber): ForgejoItemLink | null {
-      return links.get(getIssueKey(bindingId, issueNumber)) ?? null;
+      return structuredClone(links.get(getIssueKey(bindingId, issueNumber)) ?? null);
     },
     list(bindingId): ForgejoItemLink[] {
       const bindingLinks = new Map<string, ForgejoItemLink>();
@@ -51,18 +94,22 @@ export function createInMemoryForgejoItemLinkStore(): ForgejoItemLinkStore {
         }
       }
 
-      return [...bindingLinks.values()];
+      return structuredClone([...bindingLinks.values()]);
     },
     listAll(): ForgejoItemLink[] {
       const allLinks = new Map<string, ForgejoItemLink>();
 
       for (const link of links.values()) {
-        allLinks.set(link.externalId, link);
+        allLinks.set(`${link.bindingId}:${link.externalId}`, link);
       }
 
-      return [...allLinks.values()];
+      return structuredClone([...allLinks.values()]);
     },
     save(link): void {
+      const stored = prepareForgejoItemLink(
+        link,
+        links.get(getIssueKey(link.bindingId, link.issueNumber))
+      );
       const existingByTask = links.get(getTaskKey(link.bindingId, link.taskId));
       if (existingByTask) {
         links.delete(getIssueKey(link.bindingId, existingByTask.issueNumber));
@@ -73,8 +120,8 @@ export function createInMemoryForgejoItemLinkStore(): ForgejoItemLinkStore {
         links.delete(getTaskKey(link.bindingId, existingByIssue.taskId));
       }
 
-      links.set(getTaskKey(link.bindingId, link.taskId), link);
-      links.set(getIssueKey(link.bindingId, link.issueNumber), link);
+      links.set(getTaskKey(stored.bindingId, stored.taskId), stored);
+      links.set(getIssueKey(stored.bindingId, stored.issueNumber), stored);
     },
     remove(bindingId, taskId): void {
       const link = links.get(getTaskKey(bindingId, taskId));
@@ -107,7 +154,7 @@ export function createFileForgejoItemLinkStore(storagePath: string): ForgejoItem
         throw new Error(`Invalid Forgejo item link store at ${storagePath}: invalid link record`);
       }
 
-      return link as ForgejoItemLink;
+      return prepareForgejoItemLink(link as ForgejoItemLink);
     });
   };
 
@@ -132,14 +179,22 @@ export function createFileForgejoItemLinkStore(storagePath: string): ForgejoItem
       return readLinks();
     },
     save(link): void {
-      const existingLinks = readLinks().filter(
+      const links = readLinks();
+      const stored = prepareForgejoItemLink(
+        link,
+        links.find(
+          (existing) =>
+            existing.bindingId === link.bindingId && existing.issueNumber === link.issueNumber
+        )
+      );
+      const existingLinks = links.filter(
         (existingLink) =>
           !(
             existingLink.bindingId === link.bindingId &&
             (existingLink.taskId === link.taskId || existingLink.issueNumber === link.issueNumber)
           )
       );
-      existingLinks.push(link);
+      existingLinks.push(stored);
       writeLinks(existingLinks);
     },
     remove(bindingId, taskId): void {

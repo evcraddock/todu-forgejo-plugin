@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import type { IntegrationBinding, SyncProviderPullResultV4 } from "@todu/core";
 
+import { normalizeForgejoFieldSnapshots } from "@/forgejo-field-snapshots";
+
 import {
   createInMemoryForgejoCommentLinkStore,
   type ForgejoCommentLink,
@@ -121,7 +123,13 @@ export function commitForgejoPullLinks(
       Date.parse(current.lastMirroredAt) > Date.parse(link.lastMirroredAt)
     )
       continue;
-    items.save({ ...link, taskId: current?.taskId ?? link.taskId });
+    items.save({
+      ...link,
+      taskId: current?.taskId ?? link.taskId,
+      // A v4 replay changes metadata, not mirrored field-group baselines. Retain
+      // the current baselines if they were initialized/replaced since staging.
+      ...(current ? { fieldSnapshots: current.fieldSnapshots } : {}),
+    });
   }
   for (const link of pending.commentUpserts) {
     const current = comments.getByForgejoCommentId(link.bindingId, link.forgejoCommentId);
@@ -189,5 +197,11 @@ export function validateForgejoPendingPull(
     !arrayOf(value.commentRemovals, validComment)
   ) {
     throw new Error("invalid pendingPull checkpoint or replay batch");
+  }
+  for (const link of [
+    ...(value.itemUpserts as ForgejoItemLink[]),
+    ...(value.itemRemovals as ForgejoItemLink[]),
+  ]) {
+    if (link.fieldSnapshots !== undefined) normalizeForgejoFieldSnapshots(link.fieldSnapshots);
   }
 }

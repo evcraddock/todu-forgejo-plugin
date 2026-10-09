@@ -96,10 +96,17 @@ export {
   type ForgejoSyncLogger,
 } from "@/forgejo-logger";
 export {
+  equalForgejoFieldSnapshot,
+  normalizeForgejoFieldSnapshot,
+  normalizeForgejoFieldSnapshots,
+  type ForgejoFieldSnapshots,
+} from "@/forgejo-field-snapshots";
+export {
   createFileForgejoItemLinkStore,
   createInMemoryForgejoItemLinkStore,
   createLinkFromIssue,
   createLinkFromTask,
+  updateForgejoItemFieldSnapshots,
   type ForgejoItemLink,
   type ForgejoItemLinkStore,
 } from "@/forgejo-links";
