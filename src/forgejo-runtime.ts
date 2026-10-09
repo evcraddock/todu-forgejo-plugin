@@ -9,6 +9,13 @@ export type ForgejoRuntimeFailurePhase =
   | "push:issues"
   | "push:comments";
 
+export interface ForgejoPullFailureContext {
+  lastError: string | null;
+  lastFailurePhase: "pull:issues" | "pull:comments" | null;
+  lastFailureCursor: string | null;
+  lastProgressAt: string | null;
+}
+
 export interface ForgejoBindingRuntimeState {
   bindingId: IntegrationBinding["id"];
   checkpointVersion: 1;
@@ -16,6 +23,7 @@ export interface ForgejoBindingRuntimeState {
   commentPullCursor: string | null;
   lastPushSuccessAt: string | null;
   legacyCheckpoint: { cursor: string | null; lastSuccessAt: string | null } | null;
+  unresolvedPullFailure: ForgejoPullFailureContext | null;
   retryAttempt: number;
   nextRetryAt: string | null;
   lastError: string | null;
@@ -66,6 +74,7 @@ export function createInitialForgejoRuntimeState(
     commentPullCursor: null,
     lastPushSuccessAt: null,
     legacyCheckpoint: null,
+    unresolvedPullFailure: null,
     retryAttempt: 0,
     nextRetryAt: null,
     lastError: null,
@@ -89,6 +98,28 @@ export function computeNextForgejoRetryDelay(
   return Math.min(config.initialSeconds * Math.pow(2, attempt - 1), config.maxSeconds);
 }
 
+function getUnresolvedPullFailure(
+  state: Partial<ForgejoBindingRuntimeState>
+): ForgejoPullFailureContext | null {
+  if (state.unresolvedPullFailure) {
+    return state.unresolvedPullFailure;
+  }
+  const phase = state.lastFailurePhase ?? null;
+  const isPullPhase = phase === "pull:issues" || phase === "pull:comments";
+  // Old issue-discovery failures had no phase. Unknown errors require a pull to
+  // prove recovery, rather than guessing that a successful write repaired them.
+  const unknownError = phase === null && state.lastError != null;
+  if (!isPullPhase && !unknownError && !state.pendingCommentIssueNumbers?.length) {
+    return null;
+  }
+  return {
+    lastError: state.lastError ?? null,
+    lastFailurePhase: isPullPhase ? phase : null,
+    lastFailureCursor: state.lastFailureCursor ?? null,
+    lastProgressAt: state.lastProgressAt ?? null,
+  };
+}
+
 export function recordForgejoPullSuccess(
   state: ForgejoBindingRuntimeState,
   cursor: string,
@@ -98,6 +129,7 @@ export function recordForgejoPullSuccess(
     ...state,
     issuePullCursor: cursor,
     commentPullCursor: cursor,
+    unresolvedPullFailure: null,
     retryAttempt: 0,
     nextRetryAt: null,
     lastError: null,
@@ -120,9 +152,11 @@ export function recordForgejoPushSuccess(
     lastSuccessAt: now.toISOString(),
     lastAttemptAt: now.toISOString(),
   };
-  // A write cannot repair a failed read or discharge pending comment work.
-  if (state.lastFailurePhase?.startsWith("pull:") || state.pendingCommentIssueNumbers.length > 0) {
-    return successState;
+  // A write cannot repair a failed read. Restore its diagnostics after intervening
+  // push failures, while retaining the binding's current retry/backoff state.
+  const unresolvedPullFailure = getUnresolvedPullFailure(state);
+  if (unresolvedPullFailure) {
+    return { ...successState, ...unresolvedPullFailure, unresolvedPullFailure };
   }
 
   return {
@@ -154,7 +188,7 @@ export function recordForgejoFailure(
   const pendingCommentIssueNumbers =
     progress?.pendingCommentIssueNumbers ?? state.pendingCommentIssueNumbers ?? [];
 
-  return {
+  const failedState: ForgejoBindingRuntimeState = {
     ...state,
     issuePullCursor: cursor,
     retryAttempt: nextAttempt,
@@ -165,6 +199,12 @@ export function recordForgejoFailure(
     lastFailurePhase: progress?.phase ?? null,
     lastFailureCursor: isPullFailure ? cursor : null,
     pendingCommentIssueNumbers: [...new Set(pendingCommentIssueNumbers)],
+  };
+  return {
+    ...failedState,
+    unresolvedPullFailure: isPullFailure
+      ? getUnresolvedPullFailure({ ...failedState, unresolvedPullFailure: null })
+      : getUnresolvedPullFailure(state),
   };
 }
 
@@ -250,6 +290,26 @@ export function createFileForgejoBindingRuntimeStore(
           `Invalid Forgejo runtime store at ${storagePath}: unsupported checkpoint version`
         );
       }
+      if (state.unresolvedPullFailure != null) {
+        const failure = state.unresolvedPullFailure;
+        const validPhase =
+          failure.lastFailurePhase === null ||
+          failure.lastFailurePhase === "pull:issues" ||
+          failure.lastFailurePhase === "pull:comments";
+        const validTimestamp = (value: unknown) =>
+          value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
+        if (
+          typeof failure !== "object" ||
+          !validPhase ||
+          (failure.lastError !== null && typeof failure.lastError !== "string") ||
+          !validTimestamp(failure.lastFailureCursor) ||
+          !validTimestamp(failure.lastProgressAt)
+        ) {
+          throw new Error(
+            `Invalid Forgejo runtime store at ${storagePath}: invalid unresolvedPullFailure`
+          );
+        }
+      }
       const isLegacy = state.checkpointVersion === undefined;
       if (!isLegacy) {
         for (const field of [
@@ -283,6 +343,7 @@ export function createFileForgejoBindingRuntimeStore(
         lastFailurePhase: state.lastFailurePhase ?? null,
         lastFailureCursor: state.lastFailureCursor ?? null,
         pendingCommentIssueNumbers: state.pendingCommentIssueNumbers ?? [],
+        unresolvedPullFailure: getUnresolvedPullFailure(state),
       };
     });
   };

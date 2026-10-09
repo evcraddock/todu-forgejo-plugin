@@ -164,6 +164,36 @@ describe("forgejo runtime", () => {
     });
   });
 
+  it.each(["pull:issues", "pull:comments"] as const)(
+    "keeps %s diagnostics through intervening push failures and success",
+    (phase) => {
+      const failedPull = recordForgejoFailure(
+        createInitialForgejoRuntimeState(createIntegrationBindingId("binding-1")),
+        "403 forbidden reads",
+        undefined,
+        new Date("2026-03-12T00:00:00.000Z"),
+        { phase, cursor: "2026-03-12T00:00:00.000Z", progressAt: "2026-03-12T00:00:01.000Z" }
+      );
+      const failedPush = recordForgejoFailure(failedPull, "500 labels", undefined, new Date(), {
+        phase: "push:issues",
+      });
+      expect(failedPush.lastError).toBe("500 labels");
+      expect(failedPush.lastFailurePhase).toBe("push:issues");
+      const pushed = recordForgejoPushSuccess(failedPush);
+      expect(pushed).toMatchObject({
+        lastError: failedPull.lastError,
+        lastFailurePhase: phase,
+        lastFailureCursor: failedPull.lastFailureCursor,
+        lastProgressAt: failedPull.lastProgressAt,
+        retryAttempt: failedPush.retryAttempt,
+        nextRetryAt: failedPush.nextRetryAt,
+      });
+      expect(
+        recordForgejoPullSuccess(pushed, "2026-03-12T00:02:00.000Z").unresolvedPullFailure
+      ).toBeNull();
+    }
+  );
+
   it("checks retry eligibility against nextRetryAt", () => {
     const bindingId = createIntegrationBindingId("binding-1");
     const state = {
@@ -221,6 +251,12 @@ describe("forgejo runtime checkpoint migration", () => {
       nextRetryAt: legacy.nextRetryAt,
       lastError: legacy.lastError,
       legacyCheckpoint: { cursor: legacy.cursor, lastSuccessAt: legacy.lastSuccessAt },
+      unresolvedPullFailure: {
+        lastError: legacy.lastError,
+        lastFailurePhase: null,
+        lastFailureCursor: null,
+        lastProgressAt: null,
+      },
     });
     expect(fs.readFileSync(storagePath, "utf8")).toBe(raw);
   });
@@ -237,6 +273,12 @@ describe("forgejo runtime checkpoint migration", () => {
       nextRetryAt: "2026-03-12T00:07:00.000Z",
       lastFailurePhase: "pull:comments" as const,
       lastFailureCursor: "2026-03-12T00:05:00.000Z",
+      unresolvedPullFailure: {
+        lastError: null,
+        lastFailurePhase: "pull:comments" as const,
+        lastFailureCursor: "2026-03-12T00:05:00.000Z",
+        lastProgressAt: null,
+      },
     };
     const legacy = {
       bindingId: createIntegrationBindingId("legacy"),
@@ -258,6 +300,68 @@ describe("forgejo runtime checkpoint migration", () => {
     expect(reopened.get(legacy.bindingId)?.commentPullCursor).toBeNull();
   });
 
+  it("conservatively retains phase-less legacy errors through push success and restart", () => {
+    const bindingId = createIntegrationBindingId("legacy-read-error");
+    const legacy = {
+      bindingId,
+      cursor: "2026-03-12T00:01:00.000Z",
+      lastSuccessAt: "2026-03-12T00:01:00.000Z",
+      retryAttempt: 2,
+      nextRetryAt: "2026-03-12T00:03:00.000Z",
+      lastError: "permission denied: 403 issue discovery",
+      lastFailurePhase: null,
+      lastFailureCursor: "2026-03-12T00:01:00.000Z",
+    };
+    fs.writeFileSync(storagePath, JSON.stringify([legacy]));
+    const store = createFileForgejoBindingRuntimeStore(storagePath);
+    const migrated = store.get(bindingId)!;
+    const failedPush = recordForgejoFailure(migrated, "500 labels", undefined, new Date(), {
+      phase: "push:issues",
+    });
+    store.save(failedPush);
+    const reopened = createFileForgejoBindingRuntimeStore(storagePath);
+    const pushed = recordForgejoPushSuccess(reopened.get(bindingId)!);
+    expect(pushed).toMatchObject({
+      lastError: legacy.lastError,
+      lastFailurePhase: null,
+      lastFailureCursor: legacy.lastFailureCursor,
+      retryAttempt: failedPush.retryAttempt,
+      nextRetryAt: failedPush.nextRetryAt,
+      issuePullCursor: null,
+      commentPullCursor: null,
+    });
+    reopened.save(pushed);
+    expect(createFileForgejoBindingRuntimeStore(storagePath).get(bindingId)).toEqual(pushed);
+    expect(
+      recordForgejoPullSuccess(pushed, "2026-03-12T00:05:00.000Z").unresolvedPullFailure
+    ).toBeNull();
+  });
+
+  it("allows a successful push to clear a known legacy push-only failure", () => {
+    const bindingId = createIntegrationBindingId("legacy-push-error");
+    fs.writeFileSync(
+      storagePath,
+      JSON.stringify([
+        {
+          bindingId,
+          lastError: "500 label read failed",
+          lastFailurePhase: "push:issues",
+          retryAttempt: 1,
+        },
+      ])
+    );
+    const migrated = createFileForgejoBindingRuntimeStore(storagePath).get(bindingId)!;
+    expect(migrated.unresolvedPullFailure).toBeNull();
+    expect(recordForgejoPushSuccess(migrated)).toMatchObject({
+      lastError: null,
+      lastFailurePhase: null,
+      retryAttempt: 0,
+      unresolvedPullFailure: null,
+      issuePullCursor: null,
+      commentPullCursor: null,
+    });
+  });
+
   it("preserves explicit null checkpoints after push-only success and restart", () => {
     const initial = createInitialForgejoRuntimeState(createIntegrationBindingId("push-only"));
     const pushed = recordForgejoPushSuccess(initial, new Date("2026-03-12T00:06:00.000Z"));
@@ -277,6 +381,18 @@ describe("forgejo runtime checkpoint migration", () => {
       lastPushSuccessAt: null,
     },
     { checkpointVersion: 1, issuePullCursor: null, commentPullCursor: null },
+    {
+      checkpointVersion: 1,
+      issuePullCursor: null,
+      commentPullCursor: null,
+      lastPushSuccessAt: null,
+      unresolvedPullFailure: {
+        lastFailurePhase: "push:issues",
+        lastError: "push error",
+        lastFailureCursor: null,
+        lastProgressAt: null,
+      },
+    },
   ])(
     "rejects unsupported or malformed split state rather than silently resetting it: %j",
     (invalid) => {

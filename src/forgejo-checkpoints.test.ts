@@ -221,6 +221,103 @@ describe("Forgejo read/write checkpoint isolation", () => {
     }
   );
 
+  it("retains an issue-read failure across failed/successful pushes and restart", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "forgejo-pull-failure-"));
+    try {
+      const storagePath = path.join(dir, "runtime-state.json");
+      const fixture = await createFixture(createFileForgejoBindingRuntimeStore(storagePath));
+      await fixture.provider.pull(binding, project);
+      fixture.issueClient.listIssues = async () => {
+        throw new Error("403 forbidden issue reads");
+      };
+      await expect(fixture.provider.pull(binding, project)).rejects.toThrow("403");
+      const failedPull = fixture.runtimeStore.get(binding.id)!;
+      const pushBinding = { ...binding, strategy: "push" as const };
+      const listLabels = fixture.issueClient.listLabels.bind(fixture.issueClient);
+      fixture.issueClient.listLabels = async () => {
+        throw new Error("500 unavailable labels");
+      };
+      vi.setSystemTime(new Date(failedPull.nextRetryAt!));
+      await expect(fixture.provider.push(pushBinding, [task], project)).rejects.toThrow("500");
+      const failedPush = fixture.runtimeStore.get(binding.id)!;
+      expect(failedPush.lastFailurePhase).toBe("push:issues");
+      expect(failedPush.lastError).toContain("500");
+      expect(failedPush.retryAttempt).toBe(2);
+      // Reopen durable state before the successful write, without any recovery pull.
+      const runtimeStore = createFileForgejoBindingRuntimeStore(storagePath);
+      const provider = createForgejoSyncProvider({
+        issueClient: fixture.issueClient,
+        linkStore: fixture.linkStore,
+        runtimeStore,
+      });
+      await provider.initialize({ settings: { baseUrl: target.baseUrl, token: "test-token" } });
+      fixture.issueClient.listLabels = listLabels;
+      vi.setSystemTime(new Date(failedPush.nextRetryAt!));
+      await provider.push(pushBinding, [task], project);
+      const pushed = runtimeStore.get(binding.id)!;
+      expect(pushed).toMatchObject({
+        issuePullCursor: failedPull.issuePullCursor,
+        commentPullCursor: failedPull.commentPullCursor,
+        lastError: failedPull.lastError,
+        lastFailurePhase: "pull:issues",
+        lastFailureCursor: failedPull.lastFailureCursor,
+        lastProgressAt: failedPull.lastProgressAt,
+        retryAttempt: failedPush.retryAttempt,
+        nextRetryAt: failedPush.nextRetryAt,
+      });
+      expect(provider.getState().bindingStatuses.get(binding.id)?.state).toBe("blocked");
+      expect(pushed.unresolvedPullFailure).not.toBeNull();
+      fixture.issueClient.listIssues = async () => [];
+      await provider.pull(binding, project);
+      expect(runtimeStore.get(binding.id)).toMatchObject({
+        unresolvedPullFailure: null,
+        lastError: null,
+        lastFailurePhase: null,
+        retryAttempt: 0,
+      });
+      expect(provider.getState().bindingStatuses.get(binding.id)?.state).toBe("idle");
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("keeps migrated unknown read errors visible after a successful push", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "forgejo-unknown-failure-"));
+    try {
+      const storagePath = path.join(dir, "runtime-state.json");
+      fs.writeFileSync(
+        storagePath,
+        JSON.stringify([
+          {
+            bindingId: binding.id,
+            cursor: "2026-03-12T00:01:00.000Z",
+            lastSuccessAt: "2026-03-12T00:01:00.000Z",
+            lastError: "permission denied: 403 issue discovery",
+            retryAttempt: 1,
+            nextRetryAt: "2026-03-12T00:02:00.000Z",
+            lastFailurePhase: null,
+          },
+        ])
+      );
+      const fixture = await createFixture(createFileForgejoBindingRuntimeStore(storagePath));
+      await fixture.provider.push({ ...binding, strategy: "push" }, [task], project);
+      expect(fixture.provider.getState().bindingStatuses.get(binding.id)?.state).toBe("blocked");
+      expect(fixture.runtimeStore.get(binding.id)).toMatchObject({
+        issuePullCursor: null,
+        commentPullCursor: null,
+        lastError: "permission denied: 403 issue discovery",
+        lastFailurePhase: null,
+        retryAttempt: 1,
+      });
+      expect(fixture.issueSinceValues).toEqual([]);
+      await fixture.provider.pull(binding, project);
+      expect(fixture.runtimeStore.get(binding.id)?.unresolvedPullFailure).toBeNull();
+      expect(fixture.provider.getState().bindingStatuses.get(binding.id)?.state).toBe("idle");
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
   it("replays comments in the pull-start second without creating duplicate links", async () => {
     const fixture = await createFixture();
     const listComments = fixture.issueClient.listComments.bind(fixture.issueClient);

@@ -141,4 +141,5 @@ export {
   type ForgejoBindingRuntimeState,
   type ForgejoBindingRuntimeStore,
   type ForgejoRetryConfig,
+  type ForgejoPullFailureContext,
 } from "@/forgejo-runtime";
