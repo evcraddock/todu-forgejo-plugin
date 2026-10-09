@@ -112,12 +112,14 @@ export function createInMemoryForgejoItemLinkStore(): ForgejoItemLinkStore {
       );
       const existingByTask = links.get(getTaskKey(link.bindingId, link.taskId));
       if (existingByTask) {
+        links.delete(getTaskKey(link.bindingId, existingByTask.taskId));
         links.delete(getIssueKey(link.bindingId, existingByTask.issueNumber));
       }
 
       const existingByIssue = links.get(getIssueKey(link.bindingId, link.issueNumber));
       if (existingByIssue) {
         links.delete(getTaskKey(link.bindingId, existingByIssue.taskId));
+        links.delete(getIssueKey(link.bindingId, existingByIssue.issueNumber));
       }
 
       links.set(getTaskKey(stored.bindingId, stored.taskId), stored);

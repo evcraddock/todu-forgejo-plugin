@@ -204,6 +204,28 @@ describe.each(["memory", "file"] as const)("%s item-link field snapshots", (kind
     ).toThrow("Invalid Forgejo field snapshot");
   });
 
+  it("keeps lookup/list replacement behavior consistent after updating one of multiple items", () => {
+    const second = {
+      ...link,
+      taskId: createTaskId("task-8"),
+      issueNumber: 8,
+      externalId: "https://code.example.com/acme/roadmap#8",
+      fieldSnapshots: snapshots,
+    };
+    store.save({ ...link, fieldSnapshots: snapshots });
+    store.save(second);
+    updateForgejoItemFieldSnapshots(store, link.bindingId, link.taskId, {
+      workflow: { status: "done" },
+    });
+    const updated = store.getByTaskId(link.bindingId, link.taskId)!;
+    expect(store.list(link.bindingId)).toStrictEqual([second, updated]);
+    expect(store.listAll()).toStrictEqual([second, updated]);
+    const relinked = { ...second, taskId: createTaskId("real-task-8") };
+    store.save(relinked);
+    expect(store.getByTaskId(link.bindingId, second.taskId)).toBeNull();
+    expect(store.listAll()).toStrictEqual([updated, relinked]);
+  });
+
   it("cannot initialize baselines for an unlinked task", () => {
     expect(() =>
       updateForgejoItemFieldSnapshots(store, link.bindingId, link.taskId, {
