@@ -62,6 +62,16 @@ function createExportedTask(overrides: Partial<ExportedTaskInput> = {}): Exporte
   };
 }
 
+// Emulate the v4 host's successful apply/flush/ack cycle in existing lifecycle tests.
+async function pullAndAcknowledge(
+  provider: ReturnType<typeof createForgejoSyncProvider>,
+  binding = createBinding()
+) {
+  const result = await provider.pull(binding, project);
+  await provider.acknowledgePull(binding, result.checkpoint, project);
+  return result;
+}
+
 describe("forgejo provider", () => {
   it("exports initialized settings after initialize and resets on shutdown", async () => {
     const provider = createForgejoSyncProvider({ issueClient: createInMemoryForgejoIssueClient() });
@@ -119,7 +129,7 @@ describe("forgejo provider", () => {
       },
     });
 
-    await expect(provider.pull(createBinding(), project)).resolves.toEqual({
+    await expect(pullAndAcknowledge(provider)).resolves.toMatchObject({
       tasks: [],
       comments: [],
     });
@@ -145,6 +155,7 @@ describe("forgejo provider", () => {
 
     await expect(provider.pull(createBinding({ strategy: "push" }), project)).resolves.toEqual({
       tasks: [],
+      checkpoint: null,
     });
     await expect(provider.push(createBinding({ strategy: "pull" }), [], project)).resolves.toEqual({
       commentLinks: [],
@@ -161,7 +172,7 @@ describe("forgejo provider", () => {
       },
     });
 
-    await expect(provider.pull(createBinding(), project)).resolves.toEqual({
+    await expect(pullAndAcknowledge(provider)).resolves.toMatchObject({
       tasks: [],
       comments: [],
     });
@@ -289,7 +300,7 @@ describe("forgejo provider runtime integration", () => {
         token: "secret-token",
       },
     });
-    await provider.pull(createBinding(), project);
+    await pullAndAcknowledge(provider);
 
     const state = runtimeStore.get(createBinding().id);
     expect(state).not.toBeNull();
@@ -338,9 +349,9 @@ describe("forgejo provider runtime integration", () => {
       },
     });
 
-    const result = await provider.pull(
-      createBinding({ options: { importClosedOnBootstrap: true } }),
-      project
+    const result = await pullAndAcknowledge(
+      provider,
+      createBinding({ options: { importClosedOnBootstrap: true } })
     );
 
     expect(result.tasks).toHaveLength(1);
@@ -385,7 +396,7 @@ describe("forgejo provider runtime integration", () => {
       },
     });
 
-    await provider.pull(createBinding(), project);
+    await pullAndAcknowledge(provider);
     const firstPush = await provider.push(
       createBinding(),
       [
@@ -403,7 +414,7 @@ describe("forgejo provider runtime integration", () => {
       ],
       project
     );
-    const pullAfterPush = await provider.pull(createBinding(), project);
+    const pullAfterPush = await pullAndAcknowledge(provider);
     const secondPush = await provider.push(
       createBinding(),
       [
@@ -475,7 +486,7 @@ describe("forgejo provider runtime integration", () => {
       },
     });
 
-    await provider.pull(createBinding(), project);
+    await pullAndAcknowledge(provider);
     const pushResult = await provider.push(
       createBinding(),
       [
@@ -562,7 +573,7 @@ describe("forgejo provider runtime integration", () => {
       },
     });
 
-    await provider.pull(createBinding(), project);
+    await pullAndAcknowledge(provider);
 
     const updatedAtAfterFirstPull = new Date(Date.now() + 60_000).toISOString();
     issueClient.seedIssues(target, [
@@ -595,7 +606,7 @@ describe("forgejo provider runtime integration", () => {
       return originalListComments(bindingTarget, issueNumber, options);
     };
 
-    await provider.pull(createBinding(), project);
+    await pullAndAcknowledge(provider);
 
     expect(listCommentsCalls).toEqual([
       { issueNumber: 7, since: expect.any(String) },
@@ -642,7 +653,7 @@ describe("forgejo provider runtime integration", () => {
       },
     });
 
-    await provider.pull(createBinding(), project);
+    await pullAndAcknowledge(provider);
 
     const commentUpdatedAtAfterFirstPull = new Date(Date.now() + 60_000).toISOString();
     issueClient.seedComments(target, 7, [
@@ -671,7 +682,7 @@ describe("forgejo provider runtime integration", () => {
       return originalListIssues(bindingTarget, options);
     };
 
-    const result = await provider.pull(createBinding(), project);
+    const result = await pullAndAcknowledge(provider);
 
     expect(listIssuesCalls).toEqual([{ since: expect.any(String) }]);
     expect(result.tasks).toEqual([]);
@@ -816,11 +827,13 @@ describe("forgejo provider runtime integration", () => {
         if (commentError) {
           await expect(provider.pull(binding, project)).rejects.toThrow(commentError);
         } else {
-          expect((await provider.pull(binding, project)).tasks[0].title).toBe("Observed issue");
+          expect((await pullAndAcknowledge(provider, binding)).tasks[0].title).toBe(
+            "Observed issue"
+          );
         }
         const checkpoint = "2026-03-12T00:01:59.000Z";
         const state = runtimeStore.get(binding.id)!;
-        expect(state.issuePullCursor).toBe(checkpoint);
+        expect(state.issuePullCursor).toBe(commentError ? "2026-03-12T00:00:00.000Z" : checkpoint);
         expect(provider.getState().bindingStatuses.get(binding.id)?.state).toBe(expectedState);
         if (commentError) {
           expect(state).toMatchObject({
@@ -833,13 +846,15 @@ describe("forgejo provider runtime integration", () => {
             pendingCommentIssueNumbers: [7],
           });
           expect(state.lastError).toContain(commentError);
-          expect(await provider.pull(binding, project)).toEqual({ tasks: [] });
+          expect(await provider.pull(binding, project)).toEqual({ tasks: [], checkpoint: null });
           expect(issueSinceValues).toHaveLength(1);
           vi.setSystemTime(new Date(state.nextRetryAt!));
         }
 
-        const replay = await provider.pull(binding, project);
-        expect(issueSinceValues.at(-1)).toBe(checkpoint);
+        const replay = await pullAndAcknowledge(provider, binding);
+        expect(issueSinceValues.at(-1)).toBe(
+          commentError ? "2026-03-12T00:00:00.000Z" : checkpoint
+        );
         expect(replay.tasks.map((task) => task.title)).toEqual([
           "Updated during discovery",
           "Created during discovery",
@@ -864,7 +879,7 @@ describe("forgejo provider runtime integration", () => {
     }
   );
 
-  it("advances safe pull progress and retries pending comments after a comment failure", async () => {
+  it("retains acknowledged progress and replays tasks with pending comments after a comment failure", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
       {
@@ -947,16 +962,17 @@ describe("forgejo provider runtime integration", () => {
       lastFailurePhase: "pull:comments",
       pendingCommentIssueNumbers: [7],
     });
-    expect(failedState?.issuePullCursor).not.toBe("2026-03-12T00:00:00.000Z");
-    expect(Date.parse(failedState!.issuePullCursor!)).toBeGreaterThan(
+    expect(failedState?.issuePullCursor).toBe("2026-03-12T00:00:00.000Z");
+    expect(failedState?.commentPullCursor).toBe("2026-03-12T00:00:00.000Z");
+    expect(Date.parse(failedState!.lastFailureCursor!)).toBeGreaterThan(
       Date.parse("2026-03-12T00:01:00.000Z")
     );
 
     failComments = false;
-    const retryResult = await provider.pull(binding, project);
+    const retryResult = await pullAndAcknowledge(provider, binding);
 
     expect(listIssueSinceValues.at(-1)).toBe(failedState?.issuePullCursor);
-    expect(retryResult.tasks).toEqual([]);
+    expect(retryResult.tasks).toHaveLength(1);
     expect(retryResult.comments).toHaveLength(1);
     expect(runtimeStore.get(binding.id)).toMatchObject({
       lastError: null,
@@ -965,7 +981,7 @@ describe("forgejo provider runtime integration", () => {
     });
 
     const commentCallsAfterRetry = listCommentsCalls.length;
-    const finalResult = await provider.pull(binding, project);
+    const finalResult = await pullAndAcknowledge(provider, binding);
 
     expect(finalResult.comments).toEqual([]);
     expect(listCommentsCalls).toHaveLength(commentCallsAfterRetry + 1);
@@ -1282,7 +1298,7 @@ describe("forgejo provider runtime integration", () => {
         token: "secret-token",
       },
     });
-    await provider.pull(createBinding(), project);
+    await pullAndAcknowledge(provider);
 
     const status = provider.getState().bindingStatuses.get(createBinding().id);
     expect(status).toBeDefined();
@@ -1393,7 +1409,7 @@ describe("forgejo provider runtime integration", () => {
     expect(failedState!.retryAttempt).toBe(1);
 
     shouldFail = false;
-    await provider.pull(createBinding(), project);
+    await pullAndAcknowledge(provider);
 
     const successState = runtimeStore.get(createBinding().id);
     expect(successState!.retryAttempt).toBe(0);

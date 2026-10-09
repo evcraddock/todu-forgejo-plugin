@@ -1,8 +1,8 @@
 import fs from "node:fs";
-import path from "node:path";
 
 import type { IntegrationBinding, Task } from "@todu/core";
 
+import { writeForgejoStateFile } from "@/forgejo-storage";
 import type { ForgejoIssue } from "@/forgejo-client";
 import { createImportedTaskId } from "@/forgejo-ids";
 import { formatForgejoIssueExternalId } from "@/forgejo-ids";
@@ -112,8 +112,7 @@ export function createFileForgejoItemLinkStore(storagePath: string): ForgejoItem
   };
 
   const writeLinks = (links: ForgejoItemLink[]): void => {
-    fs.mkdirSync(path.dirname(storagePath), { recursive: true });
-    fs.writeFileSync(storagePath, `${JSON.stringify(links, null, 2)}\n`, "utf8");
+    writeForgejoStateFile(storagePath, links);
   };
 
   const getLink = (predicate: (link: ForgejoItemLink) => boolean): ForgejoItemLink | null =>

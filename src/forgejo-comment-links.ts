@@ -1,7 +1,8 @@
 import fs from "node:fs";
-import path from "node:path";
 
 import type { IntegrationBinding, NoteId, Task } from "@todu/core";
+
+import { writeForgejoStateFile } from "@/forgejo-storage";
 
 export type ForgejoCommentOrigin = "forgejo" | "todu";
 
@@ -144,8 +145,7 @@ export function createFileForgejoCommentLinkStore(storagePath: string): ForgejoC
   };
 
   const writeLinks = (links: ForgejoCommentLink[]): void => {
-    fs.mkdirSync(path.dirname(storagePath), { recursive: true });
-    fs.writeFileSync(storagePath, `${JSON.stringify(links, null, 2)}\n`, "utf8");
+    writeForgejoStateFile(storagePath, links);
   };
 
   return {

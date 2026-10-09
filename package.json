@@ -26,6 +26,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@todu/daemon": "^0.25.1",
+    "@todu/engine": "^0.24.1",
     "@types/node": "^25.3.5",
     "@vitest/coverage-v8": "^4.0.18",
     "esbuild": "^0.27.3",
@@ -36,6 +38,6 @@
     "vitest": "^4.0.18"
   },
   "dependencies": {
-    "@todu/core": "^0.23.1"
+    "@todu/core": "^0.25.2"
   }
 }
