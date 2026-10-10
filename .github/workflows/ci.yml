@@ -32,3 +32,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Verify generated files are committed
+        run: git diff --exit-code
+
+      - name: Verify packed installation and consumer types
+        run: npm run release:check

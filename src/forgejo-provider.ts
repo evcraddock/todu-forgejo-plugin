@@ -90,8 +90,9 @@ import {
   type ForgejoRetryConfig,
   type ForgejoRuntimeFailureProgress,
 } from "@/forgejo-runtime";
+import { VERSION } from "@/version";
 
-export const FORGEJO_PROVIDER_VERSION = "0.1.0";
+export const FORGEJO_PROVIDER_VERSION = VERSION;
 const DEFAULT_LOOP_PREVENTION_MAX_AGE_MS = 10 * 60 * 1000;
 
 export interface ForgejoProviderState {

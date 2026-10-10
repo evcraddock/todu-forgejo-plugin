@@ -3,6 +3,9 @@ set -e
 
 echo "Running pre-PR checks..."
 
+echo "→ Version consistency..."
+npm run version:check
+
 echo "→ Formatting..."
 npm run format
 

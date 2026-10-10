@@ -1,0 +1,126 @@
+name: NPM Release
+
+# Source merges and tags never publish. Dispatch and environment approval are
+# separate human publication gates; no credentials or publisher setup lives here.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Reviewed main commit SHA (40 hexadecimal characters)
+        required: true
+        type: string
+      version:
+        description: Exact package version approved for publication
+        required: true
+        type: string
+      dist_tag:
+        description: npm channel (prereleases must use next)
+        required: true
+        default: latest
+        type: choice
+        options: [latest, next]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forgejo-npm-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Verify reviewed release artifact
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_COMMIT: ${{ inputs.commit }}
+      EXPECTED_VERSION: ${{ inputs.version }}
+      DIST_TAG: ${{ inputs.dist_tag }}
+    steps:
+      - name: Require dispatch from main and an immutable commit
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          test "$DISPATCH_REF" = refs/heads/main
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a reviewed commit on main
+        run: git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main
+      - name: Require configured human publication approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/environments/npm-release" > /tmp/release-environment.json
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const environment = JSON.parse(fs.readFileSync("/tmp/release-environment.json", "utf8"));
+            if (!environment.protection_rules?.some(rule => rule.type === "required_reviewers" && rule.reviewers?.length > 0)) {
+              throw new Error("npm-release requires human reviewers before dispatch");
+            }
+          '
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Validate version and channel
+        run: npm run release:guard -- --version "$EXPECTED_VERSION" --tag "$DIST_TAG"
+      - run: ./scripts/pre-pr.sh
+      - run: npm run build
+      - name: Require generated files to be committed
+        run: git diff --exit-code
+      - name: Verify and retain the install-tested tarball
+        run: npm run release:check -- --pack-dir .release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-npm-package
+          path: |
+            .release/*.tgz
+            .release/package-verification.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish approved npm artifact
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      EXPECTED_VERSION: ${{ inputs.version }}
+      DIST_TAG: ${{ inputs.dist_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-npm-package
+          path: .release
+      - name: Require initial package and trusted-publisher setup
+        run: npm view todu-forgejo-plugin name --registry=https://registry.npmjs.org
+      - name: Check registry and tarball integrity before publishing
+        id: registry
+        run: |
+          if npm view "todu-forgejo-plugin@$EXPECTED_VERSION" version dist.integrity --json --registry=https://registry.npmjs.org > .release/registry.json; then
+            echo "Checking existing version against the verified artifact"
+          else
+            echo "Checking lookup error before attempting publication"
+          fi
+          node scripts/check-published.mjs >> "$GITHUB_OUTPUT"
+      - name: Publish only the verified artifact
+        if: steps.registry.outputs.should_publish == 'true'
+        run: npm publish ".release/todu-forgejo-plugin-$EXPECTED_VERSION.tgz" --access public --tag "$DIST_TAG" --ignore-scripts --provenance --registry=https://registry.npmjs.org
+      - name: Verify exact published version and integrity
+        run: |
+          npm view "todu-forgejo-plugin@$EXPECTED_VERSION" version dist.integrity --json --registry=https://registry.npmjs.org > .release/registry.json
+          node scripts/check-published.mjs | grep -Fx 'should_publish=false'
