@@ -4,7 +4,7 @@ Manual validation path for the Forgejo sync provider against a live Forgejo inst
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 24 for source builds and development tooling (the installed provider runtime supports Node.js 20+)
 - [overmind](https://github.com/DarthSim/overmind)
 - `todu` CLI installed
 - A Forgejo instance with API access
@@ -16,7 +16,7 @@ Manual validation path for the Forgejo sync provider against a live Forgejo inst
 ### 1. Build the plugin
 
 ```bash
-npm install
+npm ci
 npm run build
 ```
 
@@ -29,8 +29,15 @@ make dev
 
 ### 3. Configure the plugin
 
-```bash
-make dev-cli CMD="plugin config forgejo --set '{\"settings\":{\"baseUrl\":\"https://your-forgejo.example.com\",\"token\":\"YOUR_TOKEN\",\"storageDir\":\"'\"${PWD}\"'/.dev/todu/forgejo-plugin-state\"},\"intervalSeconds\":30}'"
+Use an editor to add the following settings under `daemon.plugins.config` in the ignored `config/dev.todu.yaml`. Replace placeholders locally, keep the file owner-readable only, and never put a real token in shell history, logs, task comments, or tracked files. See the README's protected-configuration guidance.
+
+```yaml
+forgejo:
+  settings:
+    baseUrl: https://your-forgejo.example.com
+    token: <test-repository-token>
+    storageDir: /absolute/path/to/checkout/.dev/todu/forgejo-plugin-state
+  intervalSeconds: 30
 ```
 
 If migrating state from an old cwd-relative directory, use the migration script on each machine before starting the daemon with the new config. See [Forgejo Storage Migration](FORGEJO-STORAGE-MIGRATION.md) for the full repeatable procedure.
