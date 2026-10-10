@@ -1,16 +1,43 @@
 {
   "name": "todu-forgejo-plugin",
   "version": "0.1.0",
-  "private": true,
-  "description": "A todu plugin that syncs Forgejo issues to the todu system.",
+  "private": false,
+  "description": "A todu sync provider for Forgejo issues and comments.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/evcraddock/todu-forgejo-plugin.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md",
+    "docs/release.md",
+    "docs/FORGEJO-STORAGE-MIGRATION.md",
+    "docs/SMOKE-TEST.md",
+    "scripts/migrate-forgejo-storage.mjs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && esbuild src/index.ts --bundle --format=esm --platform=node --outfile=dist/index.js --packages=bundle",
+    "generate-version": "node scripts/generate-version.mjs",
+    "version:check": "node scripts/generate-version.mjs --check",
+    "prebuild": "npm run generate-version",
+    "build": "tsc -p tsconfig.build.json && esbuild src/index.ts --bundle --format=esm --platform=node --outfile=dist/index.js --packages=bundle && node scripts/prepare-declarations.mjs",
+    "prebuild:watch": "npm run generate-version",
     "build:watch": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -22,9 +49,14 @@
     "repair:forgejo-comment-links": "node ./scripts/reconcile-forgejo-comment-links.mjs",
     "migrate:forgejo-storage": "node ./scripts/migrate-forgejo-storage.mjs",
     "check": "npm run lint && npm test",
-    "pre-pr": "./scripts/pre-pr.sh"
+    "pre-pr": "./scripts/pre-pr.sh",
+    "changeset": "changeset",
+    "version-packages": "changeset version && npm run generate-version && npm install --package-lock-only --ignore-scripts",
+    "release:check": "node scripts/verify-package.mjs",
+    "release:guard": "node scripts/check-release.mjs"
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.3",
     "@eslint/js": "^10.0.1",
     "@todu/daemon": "^0.25.1",
     "@todu/engine": "^0.24.1",
@@ -33,6 +65,7 @@
     "esbuild": "^0.27.3",
     "eslint": "^10.0.3",
     "prettier": "^3.8.1",
+    "semver": "^7.8.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1",
     "vitest": "^4.0.18"
