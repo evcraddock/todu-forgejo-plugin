@@ -107,6 +107,32 @@ describe("release version guards", () => {
     ).toBe(0);
   });
 
+  it("accepts dated prerelease notes and consumed Changesets prerelease state", () => {
+    for (const file of ["package.json", "package-lock.json"]) {
+      replace(directory, file, "0.1.0", "0.1.1-next.0");
+    }
+    replace(directory, "CHANGELOG.md", "## 0.1.0", "## 0.1.1-next.0 - 2026-10-11");
+    fs.writeFileSync(
+      path.join(directory, ".changeset", "pre.json"),
+      JSON.stringify({ mode: "pre", tag: "next" })
+    );
+    fs.mkdirSync(path.join(directory, ".changeset", "pre"));
+    fs.writeFileSync(
+      path.join(directory, ".changeset", "pre", "applied.md"),
+      '---\n"todu-forgejo-plugin": patch\n---\nAlready applied.\n'
+    );
+    expect(run("generate-version.mjs", directory).status).toBe(0);
+    const result = run(
+      "check-release.mjs",
+      directory,
+      "--version",
+      "0.1.1-next.0",
+      "--tag",
+      "next"
+    );
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+  });
+
   it("requires release notes for the exact approved version", () => {
     expect(run("generate-version.mjs", directory).status).toBe(0);
     replace(directory, "CHANGELOG.md", "## 0.1.0", "## Unreleased");
