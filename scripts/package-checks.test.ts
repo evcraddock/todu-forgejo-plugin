@@ -82,6 +82,7 @@ it.each(["stable", "prerelease"])(
         fs.copyFileSync(path.join(root, name), path.join(directory, name));
       }
       // Use a fixed fixture base, independent of future releases in this checkout.
+      fs.writeFileSync(path.join(directory, "CHANGELOG.md"), "# todu-forgejo-plugin\n\n");
       for (const file of ["package.json", "package-lock.json"]) {
         const full = path.join(directory, file);
         const value = JSON.parse(fs.readFileSync(full, "utf8"));
@@ -133,7 +134,7 @@ it.each(["stable", "prerelease"])(
       expect(lock.version).toBe(expectedVersion);
       expect(lock.packages[""].version).toBe(expectedVersion);
       expect(fs.readFileSync(path.join(directory, "CHANGELOG.md"), "utf8")).toContain(
-        `## ${expectedVersion}`
+        `## ${expectedVersion}\n`
       );
       expect(fs.readFileSync(path.join(directory, "CHANGELOG.md"), "utf8")).toContain(
         "Verify isolated patch preparation."
