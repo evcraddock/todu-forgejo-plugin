@@ -1,4 +1,4 @@
-# todu-forgejo-plugin
+# @todu/forgejo
 
 A sync provider for [todu](https://github.com/evcraddock/todu) that synchronizes Forgejo issues with tasks and mirrors comment creation/editing in both directions.
 
@@ -22,8 +22,8 @@ npm is the approved distribution channel. This source change prepares the releas
 
 ```bash
 # Set VERSION to an explicitly published version from the changelog.
-npm install -g "todu-forgejo-plugin@$VERSION"
-PLUGIN_ENTRY="$(npm root -g)/todu-forgejo-plugin/dist/index.js"
+npm install -g "@todu/forgejo@$VERSION"
+PLUGIN_ENTRY="$(npm root -g)/@todu/forgejo/dist/index.js"
 todu plugin install "$PLUGIN_ENTRY"
 ```
 

@@ -40,10 +40,15 @@ it("requires complete distributables and excludes source, credentials, and live 
 it("publishes only missing versions and fails closed on changed bytes or registry errors", () => {
   const tarball = Buffer.from("tested artifact");
   const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
-  const verified = { name: "todu-forgejo-plugin", version: "0.1.0", integrity };
+  const verified = { name: "@todu/forgejo", version: "0.1.0", integrity };
   const existing = { version: "0.1.0", "dist.integrity": integrity };
   expect(publicationNeeded(existing, verified, tarball)).toBe(false);
   expect(publicationNeeded({ error: { code: "E404" } }, verified, tarball)).toBe(true);
+  for (const name of ["todu-forgejo-plugin", "todu/forgejo", "@todu/other"]) {
+    expect(() =>
+      publicationNeeded({ error: { code: "E404" } }, { ...verified, name }, tarball)
+    ).toThrow("@todu/forgejo");
+  }
   expect(() => publicationNeeded(existing, verified, Buffer.from("tampered"))).toThrow("changed");
   expect(() =>
     publicationNeeded({ ...existing, "dist.integrity": "different" }, verified, tarball)
@@ -55,6 +60,49 @@ it("publishes only missing versions and fails closed on changed bytes or registr
     expect(() => publicationNeeded({ error: { code } }, verified, tarball)).toThrow(
       "Registry lookup failed"
     );
+  }
+});
+
+it.each([
+  ["todu-forgejo-0.1.0.tgz", true],
+  ["todu-forgejo-plugin-0.1.0.tgz", false],
+] as const)("checks scoped tarball basename %s before publication", (filename, accepted) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forgejo-published-package-"));
+  try {
+    const release = path.join(directory, ".release");
+    fs.mkdirSync(release);
+    const tarball = Buffer.from("verified scoped artifact fixture");
+    const verified = {
+      name: "@todu/forgejo",
+      version: "0.1.0",
+      filename,
+      integrity: `sha512-${createHash("sha512").update(tarball).digest("base64")}`,
+    };
+    fs.writeFileSync(path.join(release, filename), tarball);
+    fs.writeFileSync(path.join(release, "package-verification.json"), JSON.stringify(verified));
+    fs.writeFileSync(
+      path.join(release, "registry.json"),
+      JSON.stringify({ error: { code: "E404" } })
+    );
+    const result = spawnSync(
+      process.execPath,
+      [path.join(process.cwd(), "scripts/check-published.mjs")],
+      {
+        cwd: directory,
+        env: { EXPECTED_VERSION: "0.1.0" },
+        encoding: "utf8",
+        timeout: 10000,
+      }
+    );
+    if (accepted) {
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain("should_publish=true");
+    } else {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("todu-forgejo-0.1.0.tgz");
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true });
   }
 });
 
@@ -82,7 +130,7 @@ it.each(["stable", "prerelease"])(
         fs.copyFileSync(path.join(root, name), path.join(directory, name));
       }
       // Use a fixed fixture base, independent of future releases in this checkout.
-      fs.writeFileSync(path.join(directory, "CHANGELOG.md"), "# todu-forgejo-plugin\n\n");
+      fs.writeFileSync(path.join(directory, "CHANGELOG.md"), "# @todu/forgejo\n\n");
       for (const file of ["package.json", "package-lock.json"]) {
         const full = path.join(directory, file);
         const value = JSON.parse(fs.readFileSync(full, "utf8"));
@@ -97,7 +145,7 @@ it.each(["stable", "prerelease"])(
       );
       fs.writeFileSync(
         path.join(directory, ".changeset", "test-patch.md"),
-        '---\n"todu-forgejo-plugin": patch\n---\nVerify isolated patch preparation.\n'
+        '---\n"@todu/forgejo": patch\n---\nVerify isolated patch preparation.\n'
       );
       const home = path.join(directory, "home");
       fs.mkdirSync(home);
@@ -156,6 +204,14 @@ it.each(["stable", "prerelease"])(
   },
   20_000
 );
+
+it("targets only the scoped registry package and canonical tarball in the workflow", () => {
+  const workflow = fs.readFileSync(".github/workflows/npm-release.yml", "utf8");
+  expect(workflow).toContain("npm view @todu/forgejo name");
+  expect(workflow).toContain('npm view "@todu/forgejo@$EXPECTED_VERSION" version dist.integrity');
+  expect(workflow).toContain('npm publish ".release/todu-forgejo-$EXPECTED_VERSION.tgz"');
+  expect(workflow).not.toContain("todu-forgejo-plugin");
+});
 
 it("keeps source merges and tags outside the publication path", () => {
   const workflow = fs.readFileSync(".github/workflows/npm-release.yml", "utf8");

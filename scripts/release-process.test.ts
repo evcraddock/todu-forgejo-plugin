@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+import { verifyPackage } from "./verify-package.mjs";
+
 const root = process.cwd();
 const run = (script: string, directory: string, ...args: string[]) =>
   spawnSync(process.execPath, [path.join(root, "scripts", script), ...args], {
@@ -21,7 +23,7 @@ function fixture() {
   fs.writeFileSync(
     path.join(directory, "package.json"),
     JSON.stringify({
-      name: "todu-forgejo-plugin",
+      name: "@todu/forgejo",
       version: "0.1.0",
       private: false,
     })
@@ -29,9 +31,9 @@ function fixture() {
   fs.writeFileSync(
     path.join(directory, "package-lock.json"),
     JSON.stringify({
-      name: "todu-forgejo-plugin",
+      name: "@todu/forgejo",
       version: "0.1.0",
-      packages: { "": { name: "todu-forgejo-plugin", version: "0.1.0" } },
+      packages: { "": { name: "@todu/forgejo", version: "0.1.0" } },
     })
   );
   return directory;
@@ -62,6 +64,20 @@ describe("release version guards", () => {
     expect(fs.readFileSync(path.join(directory, "src/version.ts"), "utf8")).toBe(original);
   });
 
+  it.each(["todu-forgejo-plugin", "todu/forgejo", "@todu/other"])(
+    "rejects unexpected npm identity %s before release or packing",
+    (name) => {
+      for (const file of ["package.json", "package-lock.json"]) {
+        replace(directory, file, "@todu/forgejo", name);
+      }
+      expect(run("generate-version.mjs", directory).status).toBe(0);
+      const result = run("check-release.mjs", directory, "--version", "0.1.0", "--tag", "latest");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("@todu/forgejo");
+      expect(() => verifyPackage(directory)).toThrow("@todu/forgejo");
+    }
+  );
+
   it.each(["package-lock.json", "src/version.ts"])("rejects drift in %s", (file) => {
     expect(run("generate-version.mjs", directory).status).toBe(0);
     replace(directory, file, "0.1.0", "0.2.0");
@@ -77,7 +93,7 @@ describe("release version guards", () => {
     ).not.toBe(0);
     fs.writeFileSync(
       path.join(directory, ".changeset", "pending.md"),
-      '---\n"todu-forgejo-plugin": patch\n---\nFix\n'
+      '---\n"@todu/forgejo": patch\n---\nFix\n'
     );
     expect(
       run("check-release.mjs", directory, "--version", "0.1.0", "--tag", "latest").status
@@ -119,7 +135,7 @@ describe("release version guards", () => {
     fs.mkdirSync(path.join(directory, ".changeset", "pre"));
     fs.writeFileSync(
       path.join(directory, ".changeset", "pre", "applied.md"),
-      '---\n"todu-forgejo-plugin": patch\n---\nAlready applied.\n'
+      '---\n"@todu/forgejo": patch\n---\nAlready applied.\n'
     );
     expect(run("generate-version.mjs", directory).status).toBe(0);
     const result = run(

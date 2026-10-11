@@ -107,11 +107,11 @@ jobs:
           name: verified-npm-package
           path: .release
       - name: Require initial package and trusted-publisher setup
-        run: npm view todu-forgejo-plugin name --registry=https://registry.npmjs.org
+        run: npm view @todu/forgejo name --registry=https://registry.npmjs.org
       - name: Check registry and tarball integrity before publishing
         id: registry
         run: |
-          if npm view "todu-forgejo-plugin@$EXPECTED_VERSION" version dist.integrity --json --registry=https://registry.npmjs.org > .release/registry.json; then
+          if npm view "@todu/forgejo@$EXPECTED_VERSION" version dist.integrity --json --registry=https://registry.npmjs.org > .release/registry.json; then
             echo "Checking existing version against the verified artifact"
           else
             echo "Checking lookup error before attempting publication"
@@ -119,8 +119,8 @@ jobs:
           node scripts/check-published.mjs >> "$GITHUB_OUTPUT"
       - name: Publish only the verified artifact
         if: steps.registry.outputs.should_publish == 'true'
-        run: npm publish ".release/todu-forgejo-plugin-$EXPECTED_VERSION.tgz" --access public --tag "$DIST_TAG" --ignore-scripts --provenance --registry=https://registry.npmjs.org
+        run: npm publish ".release/todu-forgejo-$EXPECTED_VERSION.tgz" --access public --tag "$DIST_TAG" --ignore-scripts --provenance --registry=https://registry.npmjs.org
       - name: Verify exact published version and integrity
         run: |
-          npm view "todu-forgejo-plugin@$EXPECTED_VERSION" version dist.integrity --json --registry=https://registry.npmjs.org > .release/registry.json
+          npm view "@todu/forgejo@$EXPECTED_VERSION" version dist.integrity --json --registry=https://registry.npmjs.org > .release/registry.json
           node scripts/check-published.mjs | grep -Fx 'should_publish=false'

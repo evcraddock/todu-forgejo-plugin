@@ -39,6 +39,7 @@ export function checkPackFiles(files) {
 
 export function verifyPackage(root = process.cwd(), outputDirectory) {
   const metadata = checkVersion(root);
+  assert.equal(metadata.name, "@todu/forgejo", "Packed release package must be @todu/forgejo");
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forgejo-package-"));
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   const home = path.join(directory, "home");
@@ -74,6 +75,7 @@ export function verifyPackage(root = process.cwd(), outputDirectory) {
     );
     assert.equal(packed.name, metadata.name);
     assert.equal(packed.version, metadata.version);
+    assert.equal(packed.filename, `todu-forgejo-${metadata.version}.tgz`);
     checkPackFiles(packed.files);
     const tarball = path.join(directory, packed.filename);
     const consumer = path.join(directory, "consumer");
