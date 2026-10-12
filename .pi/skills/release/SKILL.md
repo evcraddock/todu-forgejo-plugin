@@ -5,7 +5,7 @@ description: Prepare and release @todu/forgejo with automatically incrementing s
 
 # Release @todu/forgejo
 
-Run all commands and resolve the repository paths below from the repository root (`../../..` relative to this skill directory). Read `docs/release.md` before starting. Follow the repository's plan, review, human merge, and exact-artifact publication approval gates. The assistant handles Changesets; never ask the user to manage version files or prerelease state.
+Run all commands and resolve the repository paths below from the repository root (`../../..` relative to this skill directory). Read `docs/release.md` before starting. Follow the repository's plan, review and human merge gates. Merging a prepared version PR authorizes automatic OIDC publication; do not add a second publication approval prompt. The assistant handles Changesets; never ask the user to manage version files or prerelease state.
 
 ## Version policy
 
@@ -54,14 +54,12 @@ npm run release:check -- --pack-dir .release
 
 Refresh full and production audits and assess findings against the actual release path as documented in `docs/release.md`. Do not apply forced fixes, invent unrelated host upgrades, or treat development findings as automatically exempt.
 
-Commit the version/changelog/lockfile/generated-source changes and consumed Changeset removals. Open a normal source/version PR, run `todu-pr-review`, and stop for explicit human merge approval. Versioning happens locally, never in CI.
+Commit the version/changelog/lockfile/generated-source changes and consumed Changeset removals. Open a normal source/version PR, run `todu-pr-review`, and stop for explicit human merge approval, clearly stating that merging the version PR publishes automatically. Complete the audit/release-path assessment before this merge gate. Versioning happens locally, never in CI.
 
-## 4. Publish the reviewed stable artifact
+## 4. Monitor automatic publication
 
-After merge, build and verify the merged source and record its exact main SHA, `@todu/forgejo` version, **latest** channel, tarball path, and SHA-512 integrity. Obtain separate exact-artifact publication approval. Prior approval for another version does not carry forward.
+After the approved version PR merges, `npm-release.yml` runs automatically on `main`. It skips pending Changesets and already-published versions, otherwise builds/verifies the exact event SHA and publishes only the isolated-install-tested tarball on **latest** using OIDC. No npm login/2FA, stored token, separate dispatch or environment-reviewer approval is required. Keep the `npm-release` environment main-only with no reviewers/wait timer; its name must match the existing npm trust identity. Tags do not publish.
 
-Use the manual `npm-release.yml` workflow only when its protected environment and npm trusted publisher are configured and approved. Dispatch with the approved commit/version; the workflow fixes the channel to `latest`. Merges and tags do not publish.
+Record the exact workflow SHA/version/channel/artifact integrity and outcome. For a failed run, retry the current workflow with `gh workflow run npm-release.yml --ref main`, without additional publication approval or another version bump. Unexpected registry errors and raced existing versions with different integrity fail closed. Do not replace trusted publishing with local npm login or broaden security settings to recover an error.
 
-If the user explicitly chooses local exact-tarball publication, the maintainer handles any login/browser/2FA privately in an interactive terminal. Never read or request credentials or codes. Never change npm/GitHub security, access, publishers, or environment protection to recover an authentication failure.
-
-Verify the public registry's exact version, tarball SHA-512, and `latest` tag before reporting success. Allow bounded registry propagation checks after publication; do not republish or bump merely because an immediate lookup returned 404. Record evidence on the task when applicable. Live installation, daemon restart, and task closure remain separate actions.
+Verify the public registry's exact version, tarball SHA-512 and `latest` tag before reporting success. Allow bounded registry propagation checks; do not republish or bump merely because an immediate lookup returned 404. A saved publisher connection or successful skipped run does not prove OIDC works; successful publication of a new reviewed version does. Record evidence on the task when applicable. Live installation, daemon restart and task closure remain separate actions.

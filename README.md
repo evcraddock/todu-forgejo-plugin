@@ -139,7 +139,7 @@ npm run build
 npm run release:check
 ```
 
-`package.json` owns the provider release version. Run `/skill:release` in Pi (or ask the assistant to release) to prepare an automatic stable increment, normally 0.1.1 → 0.1.2 → 0.1.3. The assistant manages Changesets and local version/changelog preparation; releases use `latest`, not prerelease suffixes. Publication retries keep the already prepared version. Publishing requires separate approval. See [the release process](docs/release.md).
+`package.json` owns the provider release version. Run `/skill:release` in Pi (or ask the assistant to release) to prepare an automatic stable increment, normally 0.1.1 → 0.1.2 → 0.1.3. The assistant manages Changesets and local version/changelog preparation; releases use `latest`, not prerelease suffixes. Publication retries keep the already prepared version. Merging a reviewed version PR to `main` publishes automatically through GitHub OIDC, without npm login/2FA or a second release approval. Already-published versions are skipped. See [the release process](docs/release.md).
 
 ## Documentation
 

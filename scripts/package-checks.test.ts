@@ -265,13 +265,31 @@ it("uses stable versions and the latest channel for the release skill and workfl
   expect(workflow.match(/DIST_TAG: latest/g)).toHaveLength(2);
 });
 
-it("keeps source merges and tags outside the publication path", () => {
+it("publishes main automatically through OIDC without a manual release gate", () => {
   const workflow = fs.readFileSync(".github/workflows/npm-release.yml", "utf8");
+  expect(workflow).toMatch(/^ {2}push:\n {4}branches: \[main\]$/m);
   expect(workflow).toContain("workflow_dispatch:");
-  expect(workflow).not.toMatch(/^ {2}(push|pull_request):/m);
+  expect(workflow).not.toContain("inputs:");
+  expect(workflow).not.toContain("inputs.commit");
+  expect(workflow).not.toContain("inputs.version");
+  expect(workflow).not.toMatch(/^ {2}pull_request:/m);
+  expect(workflow).toContain('test "$GITHUB_REF" = refs/heads/main');
+  expect(workflow).toContain("ref: ${{ github.sha }}");
   expect(workflow).toContain("environment: npm-release");
+  expect(workflow).not.toContain("required_reviewers");
+  expect(workflow).not.toContain("GH_TOKEN");
   expect(workflow).toContain("id-token: write");
   expect(workflow).toContain("--ignore-scripts --provenance");
-  expect(workflow).not.toContain("NPM_TOKEN");
+  expect(workflow).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/);
   expect(workflow).toContain("git merge-base --is-ancestor");
+});
+
+it("skips pending and published versions before building or requesting publishing permissions", () => {
+  const workflow = fs.readFileSync(".github/workflows/npm-release.yml", "utf8");
+  expect(workflow).toContain('node scripts/plan-release.mjs >> "$GITHUB_OUTPUT"');
+  expect(workflow).toContain("if: needs.prepare.outputs.should_publish == 'true'");
+  expect(workflow).toContain("EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}");
+  expect(workflow).toContain("if: steps.release.outputs.should_publish == 'true'");
+  const prepare = workflow.split("\n  publish:\n")[0];
+  expect(prepare).not.toContain("id-token: write");
 });

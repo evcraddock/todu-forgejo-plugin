@@ -47,25 +47,22 @@ The package check uses temporary HOME/config/state and npm config/cache director
 
 The first public package, `@todu/forgejo@0.1.1-next.0`, was published and its registry tarball verified against the approved SHA-512. That historical npm version cannot be renamed or overwritten; its changelog section remains intact. Current source exits that prerelease state and prepares stable **0.1.1**. This source preparation does not publish 0.1.1. Subsequent new releases increment from the stable version using Changesets, normally to 0.1.2, then 0.1.3. Stable numbering does not remove the known sync limitations or imply production-hardening work was performed. Old-name tarballs and old exact-artifact approvals are not reusable for new releases. The guard requires release notes for the exact candidate version, such as `## 0.1.1`.
 
-## Separate publication gate
+## Automatic publication after merge
 
-Source/version PR review and explicit human merge approval remain mandatory. Merging to `main` does **not** publish. Tags also do not publish. After merge, obtain separate explicit publication approval for the exact main commit SHA, package version, channel, and verified artifact.
+Source/version PR review and explicit human merge approval remain mandatory. **Merging a prepared version PR to `main` authorizes automatic npm publication.** There is no additional manual release dispatch, npm login/2FA, exact-artifact approval prompt or environment-reviewer wait. Tags do not trigger publication. Installation and live daemon changes remain separately approved.
 
-The `NPM Release` workflow is manual-dispatch only. It:
+The `NPM Release` workflow runs on every push to `main` and supports a parameter-free manual retry from `main`. It:
 
-1. Requires dispatch from `main`, a full 40-character commit SHA reachable from `main`, and an exact expected stable package version. The channel is fixed to `latest`.
-2. Fails if local versioning is pending, source/generated/lockfile versions disagree, the changelog lacks an exact-version release section, or any prerelease version/state is present.
-3. Requires an existing `npm-release` GitHub environment with human required reviewers before the publish job can be scheduled; missing/unprotected configuration fails closed rather than silently creating an unprotected publishing environment.
-4. Runs checks, builds, verifies that generated files are committed, and uploads the exact isolated-install-tested tarball.
-5. Waits for the separate environment approval before gaining OIDC publication permissions. The artifact, not a new build, is published with lifecycle scripts disabled.
-6. Checks the registry first. An identical existing version is skipped; different integrity, unexpected lookup errors, or altered tarball bytes fail. After publishing, exact registry version and integrity must match the verified tarball. No git tags or GitHub releases are created.
+1. Checks out the immutable event SHA and requires it to be reachable from `main`. It reads the version from committed package metadata, never versions in CI, and fixes the channel to `latest`.
+2. Skips pending local Changesets and versions already on npm **before packing**. Existing-version skips do not claim that changed source or a recompressed candidate matches the published artifact. Invalid identity/private/prerelease state, generated/lockfile drift, unexpected registry errors and malformed metadata fail closed.
+3. For an unpublished version, validates exact-version release notes and runs quality/build checks. It verifies generated files are committed, tests the package in an isolated consumer, and uploads only the verified tgz and verification JSON. `.release/` stays git-ignored; hidden-file inclusion is confined to these narrow upload paths.
+4. Automatically publishes that exact verified artifact with lifecycle scripts disabled and OIDC permissions only in the publication job. The `npm-release` environment retains the existing npm identity and main-only deployment policy but has **no required reviewers or wait timer**. No long-lived publishing tokens are used.
+5. Checks registry/tarball integrity again immediately before publication. If another publisher races this run, only identical existing bytes are accepted; different bytes or unexpected errors fail without overwriting a version. After publication, bounded propagation checks verify the exact version, SHA-512 metadata and `latest` tag. No git tags or GitHub releases are created.
 
-After explicit approval and the one-time setup below, dispatch from `main`:
+For a failed run, retry the current workflow from `main` without another version bump or interactive npm login:
 
 ```bash
-gh workflow run npm-release.yml --ref main \
-  -f commit="$APPROVED_COMMIT" \
-  -f version="$APPROVED_VERSION"
+gh workflow run npm-release.yml --ref main
 gh run list --workflow npm-release.yml
 gh run view "$RUN_ID"
 ```
@@ -74,13 +71,13 @@ Record the workflow URL and `npm view @todu/forgejo@<version> version dist.integ
 
 ## One-time maintainer setup — separately approved
 
-The first package has been bootstrapped locally by the maintainer and publicly verified. This does not establish that npm trusted publishing or the protected GitHub environment is configured. Source/version preparation never configures publishers, creates GitHub environments, changes security settings, or dispatches publication.
+The first package has been bootstrapped locally by the maintainer and publicly verified. This does not establish successful OIDC publication. Configuring package trust or GitHub deployment policy requires maintainer authorization; routine source/version preparation never changes those security settings. After one-time setup, merged version PRs publish without interactive maintainer authentication.
 
 1. Confirm package-name ownership/availability and the maintainer's permission to publish public packages in the `@todu` npm scope, then approve the exact `@todu/forgejo` artifact/version/channel. Do not create or alter scope membership/access opportunistically. An anonymous registry `E404` does not guarantee that a name can be claimed.
 2. The maintainer must bootstrap the first public npm package if it does not yet exist, because npm trusted-publisher settings require an existing package. Use the verified tarball from `.release`, not an unverified checkout. The maintainer handles npm login/2FA personally and runs the separately approved `npm publish <verified-tarball> --access public --tag <approved-channel> --ignore-scripts --registry=https://registry.npmjs.org`. Never share credentials or one-time codes with an agent. The automated workflow intentionally requires the initial package to exist and does not perform this bootstrap.
-3. With explicit approval for GitHub protection configuration, create the `npm-release` environment, add required human reviewer(s), and restrict deployment branches to `main`. The workflow checks reviewer presence before scheduling the publish job. Do not weaken or remove protections to recover a failure.
+3. Configure the `npm-release` GitHub environment with exactly the `main` deployment branch, no required reviewers and no wait timer. Keep administrator bypass disabled. This is the maintainer-selected automatic release policy, not an authentication workaround. Retain the environment name because it is part of the existing npm trusted-publisher identity.
 4. With explicit approval for npm publisher configuration, configure the package's trusted publisher for GitHub Actions: owner `evcraddock`, repository `todu-forgejo-plugin`, workflow filename `npm-release.yml`, environment `npm-release`, and direct npm publishing enabled. Keep package repository metadata matching this repository. The publish job uses GitHub-hosted runners, Node 24, and `id-token: write`; no long-lived npm token is used or stored.
-5. Verify the bootstrap registry integrity against the verified tarball. Later versions can use the manually gated workflow. Do not treat local bootstrap as proof that OIDC works; successful automated publication establishes that.
+5. Verify the bootstrap registry integrity against the verified tarball. Later unpublished versions use the automatic workflow. A saved npm connection or local publication does not validate OIDC: only a successful trusted-publisher publication establishes that. If npm shows a pending-validation deadline, complete a reviewed new release before that deadline; do not republish an existing version or manufacture a bump solely to bypass an error.
 
 ## Dependency audit and release-path assessment
 
@@ -92,11 +89,11 @@ The remaining advisory concerns the `v3()`, `v5()`, and `v6()` identifier-genera
 
 An in-memory build dependency graph contains only plugin source and `@todu/core` runtime modules; host-test modules do not enter the shipped bundle. Package checks verify isolated installation/loading/types without provider initialization and strip inherited credentials/config/state. A zero production audit alone does not prove that build inputs or arbitrary host applications are safe. Preparation jobs have no npm publishing permission; the separate publication job installs no development dependencies and publishes the previously verified tarball. No affected path for the remaining advisory was identified in the plugin artifact or controlled fixture tests.
 
-**Disposition:** re-run full and production audits before publication and assess any changed finding against the actual release environment. Remediate remaining **relevant** paths or obtain explicit narrowly scoped human acceptance identifying findings, exposure, and mitigations. An unchanged host-test finding does not by itself mandate a host-storage upgrade. No forced fixes, host downgrades, broad overrides, disabled checks, or blanket exceptions are authorized. Source merge, package verification, and publisher setup grant no security exception. Record fresh audits and the separately approved exact-artifact publication decision.
+**Disposition:** re-run full and production audits before publication and assess any changed finding against the actual release environment. Remediate remaining **relevant** paths or obtain explicit narrowly scoped human acceptance identifying findings, exposure, and mitigations. An unchanged host-test finding does not by itself mandate a host-storage upgrade. No forced fixes, host downgrades, broad overrides, disabled checks, or blanket exceptions are authorized. Source merge, package verification, and publisher setup grant no security exception. Record fresh audits and the release-path assessment in the version PR before merge, since merge authorizes automatic publication.
 
 ## Recovery and upgrades
 
-Retry a failed publication only after explicit approval, using the same reviewed SHA/version/channel and without another version bump solely for an authentication failure. Fix the actual publisher/environment/workflow identity mismatch through a reviewed PR when needed. Keep the first approved artifact and compare registry integrity before retrying; never overwrite an existing npm version or change authentication/security settings opportunistically. If an existing version has different bytes, investigate and prepare a new reviewed release rather than claiming a successful retry.
+Retry a failed publication using the current workflow on `main`, keeping the already prepared version and `latest` channel; do not increment solely for an authentication failure. Fix actual publisher/environment/workflow identity mismatches through reviewed changes, not a local npm login or broad token. Preserve release evidence and never overwrite an existing npm version. Already-published versions are skipped before packing; if publication races an independently produced artifact with different integrity, the publication job fails closed. Investigate rather than claiming a successful retry or weakening unrelated security settings.
 
 For installation and upgrades, use the README and review the changelog plus [storage migration guide](FORGEJO-STORAGE-MIGRATION.md). Back up both Todu data and plugin state before a separately approved deployment. Retain pending pull batches and field snapshots; do not manually copy legacy cursor values into acknowledged checkpoints. Do not downgrade across a storage migration unless the old version is known to support the schema or a coordinated backup restore has been approved.
 
