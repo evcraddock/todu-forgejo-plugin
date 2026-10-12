@@ -1,10 +1,12 @@
-# todu-forgejo-plugin
+# @todu/forgejo
 
 ## 0.1.1-next.0 - 2026-10-11
 
-First experimental npm release, intended for the `next` channel. Plugin versions are independent of the sync-provider API (v4) and runtime storage checkpoint schema (2). This prerelease is for controlled evaluation, not a claim of production-hardened conflict or deletion handling.
+First experimental npm release as `@todu/forgejo`, intended for the `next` channel. Plugin versions are independent of the sync-provider API (v4) and runtime storage checkpoint schema (2). This prerelease is for controlled evaluation, not a claim of production-hardened conflict or deletion handling.
 
 ### Patch Changes
+
+- Finalized the npm package name as `@todu/forgejo` before first publication. Provider identity `forgejo`, repository identity, version, and storage locations are unchanged; no old-name package was published.
 
 - Updated Vitest and coverage tooling to 4.1.11, esbuild to 0.28.2, and ESLint to 10.12.0; refreshed compatible affected test/build/lint dependencies.
 - Verified isolated package installation, provider loading/version/API, package contents, and strict consumer declarations. Existing sync behavior and host dependencies remain unchanged.

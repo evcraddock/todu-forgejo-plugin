@@ -9,6 +9,9 @@ const { values } = parseArgs({
   options: { version: { type: "string" }, tag: { type: "string" } },
 });
 const metadata = checkVersion();
+if (metadata.name !== "@todu/forgejo") {
+  throw new Error("Release package must be @todu/forgejo");
+}
 if (!values.version || values.version !== metadata.version) {
   throw new Error("--version must explicitly match package.json");
 }

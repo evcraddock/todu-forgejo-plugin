@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 export function publicationNeeded(registry, verified, tarball) {
-  assert.equal(verified.name, "todu-forgejo-plugin");
+  assert.equal(verified.name, "@todu/forgejo");
   assert.equal(
     verified.integrity,
     `sha512-${createHash("sha512").update(tarball).digest("base64")}`,
@@ -28,7 +28,7 @@ export function publicationNeeded(registry, verified, tarball) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const verified = JSON.parse(fs.readFileSync(".release/package-verification.json", "utf8"));
   assert.equal(verified.version, process.env.EXPECTED_VERSION, "Publication version mismatch");
-  assert.equal(verified.filename, `todu-forgejo-plugin-${verified.version}.tgz`);
+  assert.equal(verified.filename, `todu-forgejo-${verified.version}.tgz`);
   const registry = JSON.parse(fs.readFileSync(".release/registry.json", "utf8"));
   const needed = publicationNeeded(
     registry,

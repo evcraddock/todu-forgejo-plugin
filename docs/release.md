@@ -2,7 +2,7 @@
 
 ## Distribution and independent versions
 
-The approved distribution channel is the public npm package `todu-forgejo-plugin`. The distributable is an npm tarball containing the bundled ESM provider (`dist/index.js`), TypeScript declarations, README, license, changelog, release/migration/smoke-test guides, and standalone storage-migration helper. GitHub binary releases are not part of this process.
+The approved distribution channel is the public npm package `@todu/forgejo`. This npm identity is separate from provider identity `forgejo` and repository `evcraddock/todu-forgejo-plugin`, both of which remain unchanged. The scoped tarball basename is `todu-forgejo-<version>.tgz`, and the installed entrypoint is `<npm-root>/@todu/forgejo/dist/index.js`. The distributable is an npm tarball containing the bundled ESM provider (`dist/index.js`), TypeScript declarations, README, license, changelog, release/migration/smoke-test guides, and standalone storage-migration helper. GitHub binary releases are not part of this process.
 
 `package.json` is the release-version source of truth. `scripts/generate-version.mjs` generates the tracked `src/version.ts`; the provider and manifest use that compiled value, without needing source files or a runtime JSON import. `npm run version:check` rejects stale generated source and mismatched root lockfile metadata. Build regenerates the source; CI also requires generated changes to be committed. Never edit `src/version.ts` manually.
 
@@ -28,7 +28,7 @@ npm run changeset
 npm run version-packages
 ```
 
-Select `todu-forgejo-plugin`, the appropriate bump, and a user-facing summary. Versioning is local, never performed by CI. `version-packages` consumes pending changesets, updates the version/changelog, generates `src/version.ts`, and synchronizes the lockfile. Review all of those changes in a normal source/version PR.
+Select `@todu/forgejo`, the appropriate bump, and a user-facing summary. Versioning is local, never performed by CI. `version-packages` consumes pending changesets, updates the version/changelog, generates `src/version.ts`, and synchronizes the lockfile. Review all of those changes in a normal source/version PR.
 
 For prereleases:
 
@@ -52,7 +52,7 @@ The package check uses temporary HOME/config/state and npm config/cache director
 
 `npm run release:check -- --pack-dir .release` retains that exact tested tarball plus `package-verification.json` with its SHA-512 integrity. This directory is ignored by git.
 
-The release-process PR left the unpublished source baseline at `0.1.0` with **Unreleased** notes. The initial experimental candidate is now `0.1.1-next.0`: a real patch Changeset covers the tooling fixes, and Changesets prerelease mode selects `next`. Initial capabilities and known limitations are assigned to that exact version's dated section. Use a supported heading such as `## 0.1.1-next.0 - 2026-10-11`; the guard rejects notes that do not identify the exact candidate version. This preparation does not publish the candidate. A stable initial release without intervening changes would not need an artificial version bump; subsequent changes and prerelease/stable transitions use Changesets.
+The release-process PR left the unpublished source baseline at `0.1.0` with **Unreleased** notes. The initial experimental candidate is now `@todu/forgejo@0.1.1-next.0`: a real patch Changeset covers the tooling fixes, and Changesets prerelease mode selects `next`. Initial capabilities and known limitations are assigned to that exact version's dated section. Use a supported heading such as `## 0.1.1-next.0 - 2026-10-11`; the guard rejects notes that do not identify the exact candidate version. The package name was finalized before first publication; consumed Changesets metadata uses the scoped name so later prerelease/stable transitions remain valid. Old-name tarballs and approvals are superseded, not reusable for this candidate. This preparation does not publish the candidate. A stable initial release without intervening changes would not need an artificial version bump; subsequent changes and prerelease/stable transitions use Changesets.
 
 ## Separate publication gate
 
@@ -78,13 +78,13 @@ gh run list --workflow npm-release.yml
 gh run view "$RUN_ID"
 ```
 
-Record the workflow URL and `npm view todu-forgejo-plugin@<version> version dist.integrity --json` result. A successful local build or saved publisher configuration is not proof of publication. Changing installed software or restarting a live daemon needs separate approval.
+Record the workflow URL and `npm view @todu/forgejo@<version> version dist.integrity --json` result. A successful local build or saved publisher configuration is not proof of publication. Changing installed software or restarting a live daemon needs separate approval.
 
 ## One-time maintainer setup — separately approved
 
 This implementation only adds source configuration. It does not create npm packages, configure trusted publishers, create GitHub environments, change security settings, or dispatch publication.
 
-1. Confirm package-name ownership/availability and approve the first publication/version/channel. An anonymous registry `E404` does not guarantee that a name can be claimed.
+1. Confirm package-name ownership/availability and the maintainer's permission to publish public packages in the `@todu` npm scope, then approve the exact `@todu/forgejo` artifact/version/channel. Do not create or alter scope membership/access opportunistically. An anonymous registry `E404` does not guarantee that a name can be claimed.
 2. The maintainer must bootstrap the first public npm package if it does not yet exist, because npm trusted-publisher settings require an existing package. Use the verified tarball from `.release`, not an unverified checkout. The maintainer handles npm login/2FA personally and runs the separately approved `npm publish <verified-tarball> --access public --tag <approved-channel> --ignore-scripts --registry=https://registry.npmjs.org`. Never share credentials or one-time codes with an agent. The automated workflow intentionally requires the initial package to exist and does not perform this bootstrap.
 3. With explicit approval for GitHub protection configuration, create the `npm-release` environment, add required human reviewer(s), and restrict deployment branches to `main`. The workflow checks reviewer presence before scheduling the publish job. Do not weaken or remove protections to recover a failure.
 4. With explicit approval for npm publisher configuration, configure the package's trusted publisher for GitHub Actions: owner `evcraddock`, repository `todu-forgejo-plugin`, workflow filename `npm-release.yml`, environment `npm-release`, and direct npm publishing enabled. Keep package repository metadata matching this repository. The publish job uses GitHub-hosted runners, Node 24, and `id-token: write`; no long-lived npm token is used or stored.
