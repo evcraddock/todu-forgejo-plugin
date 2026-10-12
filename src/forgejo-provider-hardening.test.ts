@@ -207,7 +207,7 @@ describe("strategy-specific behavior", () => {
 });
 
 describe("provider error classification coverage", () => {
-  it("skips missing issue comment fetches, removes stale links, and logs a warning", async () => {
+  it("blocks missing issue comment fetches without discarding existing identities", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     issueClient.seedIssues(target, [
       {
@@ -228,30 +228,61 @@ describe("provider error classification coverage", () => {
     };
 
     const linkStore = createInMemoryForgejoItemLinkStore();
+    const commentLinkStore = createInMemoryForgejoCommentLinkStore();
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    linkStore.save(
+      createLinkFromTask({
+        binding: createBinding(),
+        taskId: createTaskId("task-1"),
+        ...target,
+        issueNumber: 7,
+        lastMirroredAt: "2026-03-12T00:00:00.000Z",
+      })
+    );
+    commentLinkStore.save({
+      bindingId: createBinding().id,
+      taskId: createTaskId("task-1"),
+      noteId: createNoteId("note-1"),
+      issueNumber: 7,
+      forgejoCommentId: 11,
+      lastMirroredAt: "2026-03-12T00:00:00.000Z",
+    });
+    const originalLinks = linkStore.listAll();
+    const originalComments = commentLinkStore.listAll();
     const logger = createForgejoSyncLogger();
     const provider = await initProvider({
       issueClient,
       linkStore,
-      commentLinkStore: createInMemoryForgejoCommentLinkStore(),
+      commentLinkStore,
+      runtimeStore,
       logger,
     });
 
-    const result = await provider.pull(createBinding(), project);
-
-    expect(result.tasks).toHaveLength(1);
-    expect(result.comments).toEqual([]);
-    expect(linkStore.getByIssueNumber(createBinding().id, 7)).toBeNull();
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow(
+      "explicit identity repair"
+    );
+    expect(linkStore.listAll()).toEqual(originalLinks);
+    expect(commentLinkStore.listAll()).toEqual(originalComments);
+    expect(runtimeStore.get(createBinding().id)).toMatchObject({
+      pendingPull: null,
+      issuePullCursor: null,
+      commentPullCursor: null,
+      lastPushSuccessAt: null,
+      lastFailurePhase: "pull:comments",
+    });
+    expect(provider.getState().bindingStatuses.get(createBinding().id)?.state).toBe("blocked");
     expect(logger.getEntries()).toContainEqual(
       expect.objectContaining({
         level: "warn",
-        message: "skipping comments for missing remote issue; stale links removed",
-        context: expect.objectContaining({
-          bindingId: createBinding().id,
-          direction: "pull",
-          entityType: "issue",
-          itemId: "7",
-        }),
+        message: "pull blocked",
       })
+    );
+    // Backoff must remain an error to the host, not an empty successful cycle.
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow(
+      "explicit identity repair"
+    );
+    await expect(provider.push(createBinding(), [createPushTask()], project)).rejects.toThrow(
+      "explicit identity repair"
     );
   });
 
@@ -529,7 +560,7 @@ describe("provider push failure handling", () => {
     );
   });
 
-  it("recreates a missing remote issue for a stale local reference and remirrors comments", async () => {
+  it("blocks a missing linked issue without recreating it or remirroring comments", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     const linkStore = createInMemoryForgejoItemLinkStore();
     const commentLinkStore = createInMemoryForgejoCommentLinkStore();
@@ -555,41 +586,38 @@ describe("provider push failure handling", () => {
       lastMirroredBody: "Old mirrored body",
     });
 
-    const provider = await initProvider({
-      issueClient,
-      linkStore,
-      commentLinkStore,
-    });
-
-    const pushResult = await provider.push(
-      createBinding(),
-      [
-        createPushTask({
-          externalId: "https://code.example.com/acme/roadmap#7",
-          updatedAt: "2026-03-12T02:00:00.000Z",
-          comments: [
-            {
-              localNoteId: createNoteId("note-1"),
-              body: "Updated local note",
-              createdAt: "2026-03-12T02:00:00.000Z",
-            },
-          ],
-        }),
-      ],
-      project
+    const originalLinks = linkStore.listAll();
+    const originalComments = commentLinkStore.listAll();
+    const runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+    const provider = await initProvider({ issueClient, linkStore, commentLinkStore, runtimeStore });
+    const tasks = [
+      createPushTask({
+        externalId: "https://code.example.com/acme/roadmap#7",
+        updatedAt: "2026-03-12T02:00:00.000Z",
+        comments: [
+          {
+            localNoteId: createNoteId("note-1"),
+            body: "Updated local note",
+            createdAt: "2026-03-12T02:00:00.000Z",
+          },
+        ],
+      }),
+    ];
+    await expect(provider.push(createBinding(), tasks, project)).rejects.toThrow(
+      "explicit identity repair"
     );
-
-    expect(issueClient.snapshotIssues(target)).toHaveLength(1);
-    expect(issueClient.snapshotComments(target, 1)).toHaveLength(1);
-    expect(issueClient.snapshotComments(target, 1)[0].body).toContain("Updated local note");
-    expect(pushResult.taskLinks).toHaveLength(1);
-    expect(pushResult.taskLinks[0].externalId).toBe("https://code.example.com/acme/roadmap#1");
-    expect(commentLinkStore.getByNoteId(createBinding().id, createNoteId("note-1"))).toMatchObject({
-      issueNumber: 1,
-      forgejoCommentId: 1,
+    expect(issueClient.snapshotIssues(target)).toEqual([]);
+    expect(issueClient.snapshotComments(target, 1)).toEqual([]);
+    expect(linkStore.listAll()).toEqual(originalLinks);
+    expect(commentLinkStore.listAll()).toEqual(originalComments);
+    expect(runtimeStore.get(createBinding().id)).toMatchObject({
+      lastPushSuccessAt: null,
+      lastFailurePhase: "push:issues",
     });
-    expect(linkStore.getByIssueNumber(createBinding().id, 7)).toBeNull();
-    expect(linkStore.getByIssueNumber(createBinding().id, 1)).not.toBeNull();
+    expect(provider.getState().bindingStatuses.get(createBinding().id)?.state).toBe("blocked");
+    await expect(provider.push(createBinding(), tasks, project)).rejects.toThrow(
+      "explicit identity repair"
+    );
   });
 
   it("records actionable error status when bounded comment processing fails", async () => {
