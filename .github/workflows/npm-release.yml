@@ -75,6 +75,7 @@ jobs:
             .release/*.tgz
             .release/package-verification.json
           if-no-files-found: error
+          include-hidden-files: true
 
   publish:
     name: Publish approved npm artifact
