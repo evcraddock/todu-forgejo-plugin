@@ -126,6 +126,12 @@ Close an issue in Forgejo. Verify the todu task status becomes `done`.
 - Verify custom labels (e.g., `bug`, `feature`) sync correctly
 - Verify label changes in either direction propagate
 
+## Missing-issue and duplicate-task regression
+
+Run `npm test -- src/forgejo-identity-host.test.ts src/forgejo-bootstrap-identity.test.ts src/forgejo-provider-hardening.test.ts` for isolated missing-identity, retry/restart, comment-endpoint failure, and host link-application checks. These tests use temporary host/plugin storage and in-memory Forgejo clients; no live daemon or remote writes are needed. Missing linked issues must produce an explicit identity-repair error with unchanged original task IDs and links, no replacement issues/comments, and no duplicate task imports. The host must still reject conflicting returned external IDs and retain error status rather than reporting an end-to-end successful cycle.
+
+Do not reproduce this scenario by deleting issues in an existing bound repository. If duplicates from an older version already exist, keep the affected binding disabled and follow the README's separately approved identity/data-repair procedure. Installing the fixed package alone does not reconcile those records.
+
 ## Monitoring
 
 ```bash

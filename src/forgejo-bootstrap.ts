@@ -1,5 +1,6 @@
 import type { ExportedTaskInput, ImportedTaskInput, IntegrationBinding } from "@todu/core";
 
+import { ForgejoIdentityError } from "@/forgejo-identity";
 import {
   createForgejoIssueCreateFromTask,
   createForgejoIssueUpdateFromTask,
@@ -180,20 +181,31 @@ export async function bootstrapTasksToForgejoIssues(input: {
     }
   };
 
-  const clearStaleTaskReferences = (taskId: ExportedTaskInput["localTaskId"]): void => {
-    input.linkStore.remove(input.binding.id, taskId as ForgejoItemLink["taskId"]);
-
-    if (!input.commentLinkStore) {
-      return;
+  // The v4 host never accepts replacing a task's existing external ID. Detect
+  // divergent persisted identities before any remote writes or link changes.
+  for (const task of input.tasks) {
+    const reference = getMatchingIssueReference(task, input.baseUrl, input.owner, input.repo);
+    const link = input.linkStore.getByTaskId(input.binding.id, task.localTaskId);
+    if (task.externalId && !getMatchingExternalId(task, input.baseUrl, input.owner, input.repo)) {
+      throw new ForgejoIdentityError(
+        `task ${task.localTaskId} already has external ID ${task.externalId} outside this binding; refusing to replace it`
+      );
     }
-
-    for (const commentLink of input.commentLinkStore.listByTask(
-      input.binding.id,
-      taskId as ForgejoItemLink["taskId"]
-    )) {
-      input.commentLinkStore.remove(input.binding.id, commentLink.noteId);
+    if (
+      link &&
+      ((task.externalId && task.externalId !== link.externalId) ||
+        (reference && reference.issueNumber !== link.issueNumber))
+    ) {
+      throw new ForgejoIdentityError(
+        `task ${task.localTaskId} and saved issue link disagree: task=${task.externalId ?? task.sourceUrl} link=${link.externalId}; refusing to relink`
+      );
     }
-  };
+  }
+
+  const unavailableIssue = (task: ExportedTaskInput, issueNumber: number): ForgejoIdentityError =>
+    new ForgejoIdentityError(
+      `linked issue ${input.owner}/${input.repo}#${issueNumber} is unavailable for task ${task.localTaskId}; existing identity retained, refusing to recreate or relink`
+    );
 
   const recordTaskAction = (action: ForgejoBootstrapTaskAction): void => {
     taskActions.push(action);
@@ -209,6 +221,11 @@ export async function bootstrapTasksToForgejoIssues(input: {
       issueNumber: issue.number,
       lastMirroredAt: issue.updatedAt ?? issue.createdAt,
     });
+    if (task.externalId && task.externalId !== createdLink.externalId) {
+      throw new ForgejoIdentityError(
+        `task ${task.localTaskId} already links to ${task.externalId}, not ${createdLink.externalId}; refusing to relink`
+      );
+    }
     input.linkStore.save(createdLink);
     createdLinks.push(createdLink);
     taskUpdates.push({
@@ -351,9 +368,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
         hydratedLinkedTasks += 1;
 
         if (!existingIssue) {
-          clearStaleTaskReferences(localTaskId);
-          await createIssueForTask(task);
-          continue;
+          throw unavailableIssue(task, existingLink.issueNumber);
         }
 
         const hydratedLink: ForgejoItemLink = {
@@ -425,8 +440,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
           throw error;
         }
 
-        clearStaleTaskReferences(localTaskId);
-        await createIssueForTask(task);
+        throw unavailableIssue(task, existingLink.issueNumber);
       }
       continue;
     }
@@ -440,9 +454,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
       );
 
       if (!existingIssue) {
-        clearStaleTaskReferences(localTaskId);
-        await createIssueForTask(task);
-        continue;
+        throw unavailableIssue(task, matchingExternalId.issueNumber);
       }
 
       const createdLink = linkTaskToIssue(task, existingIssue);
@@ -572,6 +584,9 @@ async function reconcileUnlinkedTaskToIssue(
     if (issue) {
       return { kind: "matched", issue, reason: `matched task ${explicitRef.source}` };
     }
+    throw new ForgejoIdentityError(
+      `task ${task.localTaskId} references unavailable issue ${input.owner}/${input.repo}#${explicitRef.issueNumber} via ${explicitRef.source}; refusing metadata relinking or recreation`
+    );
   }
 
   const issues = await input.listIssues();

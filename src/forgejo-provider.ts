@@ -90,6 +90,7 @@ import {
   type ForgejoRetryConfig,
   type ForgejoRuntimeFailureProgress,
 } from "@/forgejo-runtime";
+import { FORGEJO_IDENTITY_ERROR_PREFIX, ForgejoIdentityError } from "@/forgejo-identity";
 import { VERSION } from "@/version";
 
 export const FORGEJO_PROVIDER_VERSION = VERSION;
@@ -215,6 +216,19 @@ export function createForgejoSyncProvider(
     return parseForgejoBinding(binding);
   };
 
+  const retainBlockedIdentity = (state: ForgejoBindingRuntimeState): void => {
+    if (state.lastError?.startsWith(FORGEJO_IDENTITY_ERROR_PREFIX)) {
+      bindingStatuses.set(
+        state.bindingId,
+        updateForgejoBindingStatusBlocked(
+          getOrCreateBindingStatus(state.bindingId),
+          state.lastError
+        )
+      );
+      throw new Error(state.lastError);
+    }
+  };
+
   const recoverStaleRunningStatuses = (): void => {
     for (const [bindingId, status] of bindingStatuses.entries()) {
       const recovered = recoverStaleForgejoBindingStatusRunning(status);
@@ -307,6 +321,7 @@ export function createForgejoSyncProvider(
       }
       const runtimeState = getOrCreateRuntimeState(binding.id);
       if (!shouldForgejoRetry(runtimeState)) {
+        retainBlockedIdentity(runtimeState);
         logger.info("skipping pull: retry backoff not elapsed", logContext);
         return { tasks: [], checkpoint: null };
       }
@@ -389,18 +404,12 @@ export function createForgejoSyncProvider(
                       return "throw";
                     }
 
-                    for (const link of stagedLinks.commentStore.listByIssue(
-                      binding.id,
-                      itemLink.issueNumber
-                    ))
-                      stagedLinks.commentStore.remove(binding.id, link.noteId);
-                    stagedLinks.itemStore.remove(binding.id, itemLink.taskId);
-                    logger.warn("skipping comments for missing remote issue; stale links removed", {
-                      ...logContext,
-                      entityType: "issue",
-                      itemId: String(itemLink.issueNumber),
-                    });
-                    return "continue";
+                    // A 404 can mean inaccessible, not deleted. Do not acknowledge
+                    // removal of identity/comment links and then recreate on push.
+                    throw new ForgejoIdentityError(
+                      `comments for linked issue ${parsedBinding.owner}/${parsedBinding.repo}#${itemLink.issueNumber} are unavailable; existing task/comment links retained`,
+                      { cause: error }
+                    );
                   },
                 });
 
@@ -513,6 +522,7 @@ export function createForgejoSyncProvider(
 
       const runtimeState = getOrCreateRuntimeState(binding.id);
       if (!shouldForgejoRetry(runtimeState)) {
+        retainBlockedIdentity(runtimeState);
         logger.info("skipping push: retry backoff not elapsed", logContext);
         return { commentLinks: [], taskLinks: [] };
       }
@@ -634,6 +644,8 @@ export function createForgejoSyncProvider(
           );
         }
 
+        // API v4 has no host push acknowledgment. This records remote work only;
+        // shared integration status owns the host's end-to-end application result.
         const successState = recordForgejoPushSuccess(getOrCreateRuntimeState(binding.id));
         runtimeStore.save(successState);
         let status = updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id));
@@ -772,7 +784,15 @@ export const syncProvider: SyncProviderRegistration = {
 };
 
 export interface ForgejoSyncErrorClassification {
-  kind: "auth" | "permission" | "not-found" | "rate-limit" | "server" | "transport" | "unknown";
+  kind:
+    | "identity"
+    | "auth"
+    | "permission"
+    | "not-found"
+    | "rate-limit"
+    | "server"
+    | "transport"
+    | "unknown";
   retryable: boolean;
   summary: string;
 }
@@ -783,6 +803,10 @@ export function getImportClosedOnBootstrap(binding: IntegrationBinding): boolean
 
 export function classifyForgejoSyncError(error: unknown): ForgejoSyncErrorClassification {
   const message = error instanceof Error ? error.message : String(error);
+
+  if (message.startsWith(FORGEJO_IDENTITY_ERROR_PREFIX)) {
+    return { kind: "identity", retryable: false, summary: message };
+  }
 
   if (/\b401\b/.test(message)) {
     return { kind: "auth", retryable: false, summary: `authentication failed: ${message}` };

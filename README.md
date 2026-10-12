@@ -10,7 +10,7 @@ Implemented features include issue/task bootstrap, title and markdown body sync,
 - The runtime requires Node.js 20 or newer; source builds/versioning use Node.js 24.
 - Issue fields still use whole-record timestamps/replacement; concurrent changes can overwrite unrelated fields. Optional field snapshots are storage foundations, not API v5 reconciliation.
 - An absent Todu description does not clear the existing Forgejo body. Empty/partially mapped assignee exports are not yet complete safe set replacement.
-- Missing/inaccessible remote issues can be recreated from local tasks. Metadata equality can currently relink unrelated records. Comment conflicts remain origin-sensitive; comment deletion does not propagate.
+- Missing/inaccessible linked issues now block sync with an explicit identity-repair diagnostic; original task/comment links are retained and no replacement issue is created. This does not automatically clean up duplicates produced by older versions. Metadata equality can still relink tasks without an explicit identity. Comment conflicts remain origin-sensitive; comment deletion does not propagate.
 
 See [CHANGELOG.md](CHANGELOG.md) for capabilities and remaining limitations. Start new bindings in `pull` mode and inspect the imports before enabling bidirectional writes.
 
@@ -105,6 +105,14 @@ After a separately approved daemon restart, verify with `todu plugin list` and `
 4. Restart the daemon with separate approval, verify the reported plugin version and binding status, and follow the [smoke-test guide](docs/SMOKE-TEST.md).
 
 Publishing does not update an installed plugin. Do not downgrade across storage schema changes without verified compatibility or an approved coordinated backup restore.
+
+## Identity failures and duplicate-task recovery
+
+A `Forgejo requires explicit identity repair` error means a linked issue/comment endpoint is unavailable or the exported task identity disagrees with plugin-owned storage. A 404 is not proof of deletion. Sync preserves known identities instead of creating a replacement issue or silently choosing another issue with matching metadata. The error remains visible during retry backoff and after restart; a skipped blocked operation is not an end-to-end successful sync.
+
+Disable the affected binding before investigating. Compare the original task's `externalId`/`sourceUrl`, remote issue, `item-links.json`, `comment-links.json`, and any pending pull batch. Keep backups of Todu data and plugin state. Existing duplicates require an explicitly approved repair: preserve original task IDs and all unique descriptions, notes, approval/provenance and link state before removing the exact duplicate records. Do not simply delete a duplicate while its remote issue can be imported again, clear plugin state, bypass the host's existing-link guard, or re-enable the binding to test a repair. Determine and reconcile the canonical identities first; remote deletion is a separate approval.
+
+The provider's `lastPushSuccessAt` records remote push work only: API v4 has no host push-application acknowledgment. Use `todu integration status <binding-id>` and daemon cycle logs for the host's end-to-end application result. A provider timestamp alone cannot establish successful host persistence.
 
 ## Development
 
