@@ -1,18 +1,11 @@
 name: NPM Release
 
-# Source merges and tags never publish. Dispatch and environment approval are
-# separate human publication gates; no credentials or publisher setup lives here.
+# A reviewed version PR merged to main authorizes automatic publication.
+# OIDC replaces npm login/2FA; no long-lived publishing credentials are used.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      commit:
-        description: Reviewed main commit SHA (40 hexadecimal characters)
-        required: true
-        type: string
-      version:
-        description: Exact package version approved for publication
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -23,52 +16,48 @@ concurrency:
 
 jobs:
   prepare:
-    name: Verify reviewed release artifact
+    name: Verify release artifact
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      should_publish: ${{ steps.release.outputs.should_publish }}
     env:
-      RELEASE_COMMIT: ${{ inputs.commit }}
-      EXPECTED_VERSION: ${{ inputs.version }}
       DIST_TAG: latest
     steps:
-      - name: Require dispatch from main and an immutable commit
-        env:
-          DISPATCH_REF: ${{ github.ref }}
-        run: |
-          test "$DISPATCH_REF" = refs/heads/main
-          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+      - name: Require main
+        run: test "$GITHUB_REF" = refs/heads/main
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Require a reviewed commit on main
-        run: git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main
-      - name: Require configured human publication approval
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/environments/npm-release" > /tmp/release-environment.json
-          node --input-type=module -e '
-            import fs from "node:fs";
-            const environment = JSON.parse(fs.readFileSync("/tmp/release-environment.json", "utf8"));
-            if (!environment.protection_rules?.some(rule => rule.type === "required_reviewers" && rule.reviewers?.length > 0)) {
-              throw new Error("npm-release requires human reviewers before dispatch");
-            }
-          '
+      - name: Require a commit on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: Skip pending versioning and already published versions
+        id: release
+        run: node scripts/plan-release.mjs >> "$GITHUB_OUTPUT"
       - name: Validate version and channel
+        if: steps.release.outputs.should_publish == 'true'
+        env:
+          EXPECTED_VERSION: ${{ steps.release.outputs.version }}
         run: npm run release:guard -- --version "$EXPECTED_VERSION" --tag "$DIST_TAG"
       - run: ./scripts/pre-pr.sh
+        if: steps.release.outputs.should_publish == 'true'
       - run: npm run build
+        if: steps.release.outputs.should_publish == 'true'
       - name: Require generated files to be committed
+        if: steps.release.outputs.should_publish == 'true'
         run: git diff --exit-code
       - name: Verify and retain the install-tested tarball
+        if: steps.release.outputs.should_publish == 'true'
         run: npm run release:check -- --pack-dir .release
       - uses: actions/upload-artifact@v4
+        if: steps.release.outputs.should_publish == 'true'
         with:
           name: verified-npm-package
           path: |
@@ -78,20 +67,22 @@ jobs:
           include-hidden-files: true
 
   publish:
-    name: Publish approved npm artifact
+    name: Publish verified npm artifact
     needs: prepare
+    if: needs.prepare.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
+    # Retain the existing npm OIDC environment identity, but no reviewer wait.
     environment: npm-release
     permissions:
       contents: read
       id-token: write
     env:
-      EXPECTED_VERSION: ${{ inputs.version }}
+      EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
       DIST_TAG: latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.commit }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -115,7 +106,15 @@ jobs:
       - name: Publish only the verified artifact
         if: steps.registry.outputs.should_publish == 'true'
         run: npm publish ".release/todu-forgejo-$EXPECTED_VERSION.tgz" --access public --tag "$DIST_TAG" --ignore-scripts --provenance --registry=https://registry.npmjs.org
-      - name: Verify exact published version and integrity
+      - name: Verify exact published version, integrity and latest tag
         run: |
-          npm view "@todu/forgejo@$EXPECTED_VERSION" version dist.integrity --json --registry=https://registry.npmjs.org > .release/registry.json
-          node scripts/check-published.mjs | grep -Fx 'should_publish=false'
+          for attempt in 1 2 3 4 5 6; do
+            if npm view "@todu/forgejo@$EXPECTED_VERSION" version dist.integrity --json --registry=https://registry.npmjs.org > .release/registry.json \
+              && node scripts/check-published.mjs | grep -Fx 'should_publish=false' \
+              && test "$(npm view @todu/forgejo dist-tags.latest --registry=https://registry.npmjs.org)" = "$EXPECTED_VERSION"; then
+              exit 0
+            fi
+            if test "$attempt" -lt 6; then sleep 5; fi
+          done
+          echo "Published version, integrity or latest tag could not be verified" >&2
+          exit 1
