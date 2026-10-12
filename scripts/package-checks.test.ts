@@ -238,6 +238,18 @@ it("targets only the scoped registry package and canonical tarball in the workfl
   expect(workflow).not.toContain("todu-forgejo-plugin");
 });
 
+it("uploads hidden release artifacts without broadening the selected files", () => {
+  const workflow = fs.readFileSync(".github/workflows/npm-release.yml", "utf8");
+  const upload = workflow.match(/^ {6}- uses: actions\/upload-artifact@v4\n((?: {8,}.+\n)+)/m)?.[1];
+  expect(upload).toBeDefined();
+  expect(upload).toMatch(/^ {10}include-hidden-files: true$/m);
+  expect(upload).toMatch(
+    /^ {10}path: \|\n {12}\.release\/\*\.tgz\n {12}\.release\/package-verification\.json\n(?= {10}\S)/m
+  );
+  expect(upload).toMatch(/^ {10}if-no-files-found: error$/m);
+  expect(fs.readFileSync(".gitignore", "utf8")).toMatch(/^\.release\/$/m);
+});
+
 it("uses stable versions and the latest channel for the release skill and workflow", () => {
   const metadata = JSON.parse(fs.readFileSync("package.json", "utf8"));
   expect(metadata.version).toMatch(/^\d+\.\d+\.\d+$/);
