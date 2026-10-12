@@ -1,6 +1,6 @@
 {
   "name": "@todu/forgejo",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "description": "A todu sync provider for Forgejo issues and comments.",
   "license": "MIT",
