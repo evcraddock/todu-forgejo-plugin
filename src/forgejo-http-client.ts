@@ -13,6 +13,7 @@ import {
   type UpdateForgejoIssueInput,
 } from "@/forgejo-client";
 import { formatForgejoIssueExternalId } from "@/forgejo-ids";
+import { ForgejoHttpError, getForgejoHttpStatus } from "@/forgejo-http-error";
 
 interface ForgejoApiUser {
   id?: number | string;
@@ -195,7 +196,7 @@ export function createHttpForgejoIssueClient(
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`Forgejo API ${method} ${path} failed: ${response.status} ${text}`);
+      throw new ForgejoHttpError(response.status, method, path, text);
     }
 
     if (response.status === 204) {
@@ -303,7 +304,7 @@ export function createHttpForgejoIssueClient(
 
         return mapApiIssue(target, rawIssue);
       } catch (error) {
-        if (error instanceof Error && error.message.includes("404")) {
+        if (getForgejoHttpStatus(error) === 404) {
           return null;
         }
 

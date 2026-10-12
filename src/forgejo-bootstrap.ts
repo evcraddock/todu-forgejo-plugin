@@ -1,6 +1,7 @@
 import type { ExportedTaskInput, ImportedTaskInput, IntegrationBinding } from "@todu/core";
 
 import { ForgejoIdentityError } from "@/forgejo-identity";
+import { getForgejoHttpStatus } from "@/forgejo-http-error";
 import {
   createForgejoIssueCreateFromTask,
   createForgejoIssueUpdateFromTask,
@@ -550,7 +551,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
 
 function isForgejoIssueNotFoundError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /\b404\b/.test(message) || /issue not found/i.test(message);
+  return getForgejoHttpStatus(error) === 404 || /issue not found/i.test(message);
 }
 
 function isForgejoIssueCreateConflictError(error: unknown): boolean {

@@ -91,6 +91,7 @@ import {
   type ForgejoRuntimeFailureProgress,
 } from "@/forgejo-runtime";
 import { FORGEJO_IDENTITY_ERROR_PREFIX, ForgejoIdentityError } from "@/forgejo-identity";
+import { getForgejoHttpStatus } from "@/forgejo-http-error";
 import { VERSION } from "@/version";
 
 export const FORGEJO_PROVIDER_VERSION = VERSION;
@@ -216,8 +217,8 @@ export function createForgejoSyncProvider(
     return parseForgejoBinding(binding);
   };
 
-  const retainBlockedIdentity = (state: ForgejoBindingRuntimeState): void => {
-    if (state.lastError?.startsWith(FORGEJO_IDENTITY_ERROR_PREFIX)) {
+  const retainBlockedFailure = (state: ForgejoBindingRuntimeState): void => {
+    if (state.lastError && !classifyForgejoSyncError(state.lastError).retryable) {
       bindingStatuses.set(
         state.bindingId,
         updateForgejoBindingStatusBlocked(
@@ -321,7 +322,7 @@ export function createForgejoSyncProvider(
       }
       const runtimeState = getOrCreateRuntimeState(binding.id);
       if (!shouldForgejoRetry(runtimeState)) {
-        retainBlockedIdentity(runtimeState);
+        retainBlockedFailure(runtimeState);
         logger.info("skipping pull: retry backoff not elapsed", logContext);
         return { tasks: [], checkpoint: null };
       }
@@ -522,7 +523,7 @@ export function createForgejoSyncProvider(
 
       const runtimeState = getOrCreateRuntimeState(binding.id);
       if (!shouldForgejoRetry(runtimeState)) {
-        retainBlockedIdentity(runtimeState);
+        retainBlockedFailure(runtimeState);
         logger.info("skipping push: retry backoff not elapsed", logContext);
         return { commentLinks: [], taskLinks: [] };
       }
@@ -808,23 +809,24 @@ export function classifyForgejoSyncError(error: unknown): ForgejoSyncErrorClassi
     return { kind: "identity", retryable: false, summary: message };
   }
 
-  if (/\b401\b/.test(message)) {
+  const status = getForgejoHttpStatus(error);
+  if (status === 401) {
     return { kind: "auth", retryable: false, summary: `authentication failed: ${message}` };
   }
 
-  if (/\b403\b/.test(message)) {
+  if (status === 403) {
     return { kind: "permission", retryable: false, summary: `permission denied: ${message}` };
   }
 
-  if (/\b404\b/.test(message)) {
+  if (status === 404) {
     return { kind: "not-found", retryable: false, summary: `resource not found: ${message}` };
   }
 
-  if (/\b429\b/.test(message) || /rate limit/i.test(message)) {
+  if (status === 429 || /rate limit/i.test(message)) {
     return { kind: "rate-limit", retryable: true, summary: `rate limited: ${message}` };
   }
 
-  if (/\b5\d\d\b/.test(message)) {
+  if (status !== null && status >= 500 && status < 600) {
     return { kind: "server", retryable: true, summary: `server error: ${message}` };
   }
 

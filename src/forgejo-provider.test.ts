@@ -849,7 +849,11 @@ describe("forgejo provider runtime integration", () => {
             pendingCommentIssueNumbers: [7],
           });
           expect(state.lastError).toContain(commentError);
-          expect(await provider.pull(binding, project)).toEqual({ tasks: [], checkpoint: null });
+          if (expectedState === "blocked") {
+            await expect(provider.pull(binding, project)).rejects.toThrow(commentError);
+          } else {
+            expect(await provider.pull(binding, project)).toEqual({ tasks: [], checkpoint: null });
+          }
           expect(issueSinceValues).toHaveLength(1);
           vi.setSystemTime(new Date(state.nextRetryAt!));
         }
@@ -1337,7 +1341,7 @@ describe("forgejo provider runtime integration", () => {
     expect(logger.getEntries().at(-1)?.message).toBe("pull blocked");
   });
 
-  it("skips future cycles temporarily after a blocked auth failure", async () => {
+  it("retains blocked auth errors without additional requests during backoff", async () => {
     const issueClient = createInMemoryForgejoIssueClient();
     let callCount = 0;
     issueClient.listIssues = async () => {
@@ -1360,9 +1364,9 @@ describe("forgejo provider runtime integration", () => {
     });
 
     await expect(provider.pull(createBinding(), project)).rejects.toThrow();
-    const retryResult = await provider.pull(createBinding(), project);
+    await expect(provider.pull(createBinding(), project)).rejects.toThrow("authentication failed");
 
-    expect(retryResult.tasks).toEqual([]);
+    expect(provider.getState().bindingStatuses.get(createBinding().id)?.state).toBe("blocked");
     expect(callCount).toBe(1);
     expect(runtimeStore.get(createBinding().id)?.nextRetryAt).not.toBeNull();
   });
