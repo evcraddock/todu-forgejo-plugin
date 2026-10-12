@@ -18,7 +18,7 @@ See [CHANGELOG.md](CHANGELOG.md) for capabilities and remaining limitations. Sta
 
 ### npm distribution
 
-npm is the approved distribution channel. This source change prepares the release process; it does **not** publish a package. The commands below apply only after the selected version is actually available on npm:
+npm is the distribution channel for `@todu/forgejo`. Source version preparation does **not** publish a package. Install only a version verified as publicly available on npm:
 
 ```bash
 # Set VERSION to an explicitly published version from the changelog.
@@ -131,7 +131,7 @@ npm run build
 npm run release:check
 ```
 
-`package.json` owns the provider release version. Changesets prepares versions/changelogs locally; publishing requires separate approval. See [the release process](docs/release.md).
+`package.json` owns the provider release version. Run `/skill:release` in Pi (or ask the assistant to release) to prepare an automatic stable increment, normally 0.1.1 → 0.1.2 → 0.1.3. The assistant manages Changesets and local version/changelog preparation; releases use `latest`, not prerelease suffixes. Publication retries keep the already prepared version. Publishing requires separate approval. See [the release process](docs/release.md).
 
 ## Documentation
 

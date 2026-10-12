@@ -1,5 +1,15 @@
 # @todu/forgejo
 
+## 0.1.1
+
+Normal stable version of `@todu/forgejo`, prepared for the `latest` channel. Existing capabilities and known sync limitations listed under 0.1.1-next.0 still apply; provider API v4 and storage checkpoint schema 2 are unchanged.
+
+### Patch Changes
+
+- Exit Changesets prerelease mode and remove the `next` version suffix. Future releases use incrementing stable versions, normally 0.1.2, 0.1.3, and so on.
+- Add a repository release skill that handles patch Changesets and local version preparation automatically, without another bump when retrying publication.
+- Restrict publication guards and the manual npm workflow to stable versions on `latest`. Retain exact-artifact review and publication approval gates.
+
 ## 0.1.1-next.0 - 2026-10-11
 
 First experimental npm release as `@todu/forgejo`, intended for the `next` channel. Plugin versions are independent of the sync-provider API (v4) and runtime storage checkpoint schema (2). This prerelease is for controlled evaluation, not a claim of production-hardened conflict or deletion handling.

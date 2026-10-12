@@ -13,12 +13,6 @@ on:
         description: Exact package version approved for publication
         required: true
         type: string
-      dist_tag:
-        description: npm channel (prereleases must use next)
-        required: true
-        default: latest
-        type: choice
-        options: [latest, next]
 
 permissions:
   contents: read
@@ -34,7 +28,7 @@ jobs:
     env:
       RELEASE_COMMIT: ${{ inputs.commit }}
       EXPECTED_VERSION: ${{ inputs.version }}
-      DIST_TAG: ${{ inputs.dist_tag }}
+      DIST_TAG: latest
     steps:
       - name: Require dispatch from main and an immutable commit
         env:
@@ -92,7 +86,7 @@ jobs:
       id-token: write
     env:
       EXPECTED_VERSION: ${{ inputs.version }}
-      DIST_TAG: ${{ inputs.dist_tag }}
+      DIST_TAG: latest
     steps:
       - uses: actions/checkout@v4
         with:
