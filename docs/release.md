@@ -15,30 +15,23 @@ Use Node.js **24** and npm **11.5.1 or later** for development/versioning and tr
 - **Patch:** compatible fixes, maintenance, and small internal changes.
 - **Minor:** compatible new functionality.
 - **Major:** incompatible public behavior, configuration, or installation changes. Before 1.0, explicitly document incompatible changes and use a minor bump; do not hide them in patches.
-- **Prerelease:** use Changesets prerelease mode and publish only to npm's `next` channel. Stable releases normally use `latest`. The publication guard rejects prerelease versions on `latest`.
+- **Release channel:** use stable `X.Y.Z` versions and npm's `latest` channel only. Do not enable Changesets prerelease mode or add `next`, beta, RC, or other prerelease suffixes. The publication guard rejects prerelease versions, leftover prerelease state, and channels other than `latest`.
 
 Changing the provider API or storage schema is a compatibility decision, not an automatic package-version bump rule. Document required host upgrades, backups, and migration/rollback restrictions in the release notes. Package versions use canonical SemVer without build metadata.
 
 ## Prepare locally, review normally
 
-For a change that needs a new release:
+Run the repository's `release` skill (`/skill:release` in Pi), or ask the assistant to release the plugin. The assistant manages Changesets and prepares one stable increment for each new release request, defaulting to patch: **0.1.1 → 0.1.2 → 0.1.3**. Compatible features can use minor; intentional breaking changes require an explicit compatibility decision. Retrying publication of an already prepared release reuses its version and verified artifact, without another bump.
+
+The skill creates a patch Changeset when the requested release has none pending, summarizes the actual changes, and runs:
 
 ```bash
-npm run changeset
 npm run version-packages
 ```
 
-Select `@todu/forgejo`, the appropriate bump, and a user-facing summary. Versioning is local, never performed by CI. `version-packages` consumes pending changesets, updates the version/changelog, generates `src/version.ts`, and synchronizes the lockfile. Review all of those changes in a normal source/version PR.
+For manual preparation, `npm run changeset` selects `@todu/forgejo`, the appropriate bump, and a user-facing summary before the same versioning command. Versioning is local, never performed by CI. `version-packages` consumes pending changesets, updates the version/changelog, generates `src/version.ts`, and synchronizes the lockfile. Review all of those changes in a normal source/version PR.
 
-For prereleases:
-
-```bash
-npm run changeset -- pre enter next
-npm run changeset
-npm run version-packages
-```
-
-Keep Changesets' `.changeset/pre.json` in the PR. To prepare a stable release later, run `npm run changeset -- pre exit`, then `npm run version-packages` and review the resulting stable version/changelog. Do not use `changeset publish`: its automatic prerelease handling can put an initially unpublished package on `latest`. Our publication workflow publishes the verified tarball with the explicitly approved channel instead.
+Prerelease mode is not part of the release flow. If an old checkout still has `.changeset/pre.json`, the one-time transition is `npm run changeset -- pre exit`, then `npm run version-packages`; review the resulting stable version and removal of prerelease state. Never re-enter prerelease mode. Do not use `changeset publish`: our publication workflow publishes only the isolated-install-tested tarball with the approved stable version on `latest`.
 
 Before review:
 
@@ -52,7 +45,7 @@ The package check uses temporary HOME/config/state and npm config/cache director
 
 `npm run release:check -- --pack-dir .release` retains that exact tested tarball plus `package-verification.json` with its SHA-512 integrity. This directory is ignored by git.
 
-The release-process PR left the unpublished source baseline at `0.1.0` with **Unreleased** notes. The initial experimental candidate is now `@todu/forgejo@0.1.1-next.0`: a real patch Changeset covers the tooling fixes, and Changesets prerelease mode selects `next`. Initial capabilities and known limitations are assigned to that exact version's dated section. Use a supported heading such as `## 0.1.1-next.0 - 2026-10-11`; the guard rejects notes that do not identify the exact candidate version. The package name was finalized before first publication; consumed Changesets metadata uses the scoped name so later prerelease/stable transitions remain valid. Old-name tarballs and approvals are superseded, not reusable for this candidate. This preparation does not publish the candidate. A stable initial release without intervening changes would not need an artificial version bump; subsequent changes and prerelease/stable transitions use Changesets.
+The first public package, `@todu/forgejo@0.1.1-next.0`, was published and its registry tarball verified against the approved SHA-512. That historical npm version cannot be renamed or overwritten; its changelog section remains intact. Current source exits that prerelease state and prepares stable **0.1.1**. This source preparation does not publish 0.1.1. Subsequent new releases increment from the stable version using Changesets, normally to 0.1.2, then 0.1.3. Stable numbering does not remove the known sync limitations or imply production-hardening work was performed. Old-name tarballs and old exact-artifact approvals are not reusable for new releases. The guard requires release notes for the exact candidate version, such as `## 0.1.1`.
 
 ## Separate publication gate
 
@@ -60,8 +53,8 @@ Source/version PR review and explicit human merge approval remain mandatory. Mer
 
 The `NPM Release` workflow is manual-dispatch only. It:
 
-1. Requires dispatch from `main`, a full 40-character commit SHA reachable from `main`, an exact expected package version, and `latest` or `next`.
-2. Fails if local versioning is pending, source/generated/lockfile versions disagree, the changelog lacks an exact-version release section, or a prerelease targets `latest`.
+1. Requires dispatch from `main`, a full 40-character commit SHA reachable from `main`, and an exact expected stable package version. The channel is fixed to `latest`.
+2. Fails if local versioning is pending, source/generated/lockfile versions disagree, the changelog lacks an exact-version release section, or any prerelease version/state is present.
 3. Requires an existing `npm-release` GitHub environment with human required reviewers before the publish job can be scheduled; missing/unprotected configuration fails closed rather than silently creating an unprotected publishing environment.
 4. Runs checks, builds, verifies that generated files are committed, and uploads the exact isolated-install-tested tarball.
 5. Waits for the separate environment approval before gaining OIDC publication permissions. The artifact, not a new build, is published with lifecycle scripts disabled.
@@ -72,17 +65,16 @@ After explicit approval and the one-time setup below, dispatch from `main`:
 ```bash
 gh workflow run npm-release.yml --ref main \
   -f commit="$APPROVED_COMMIT" \
-  -f version="$APPROVED_VERSION" \
-  -f dist_tag="$APPROVED_CHANNEL"
+  -f version="$APPROVED_VERSION"
 gh run list --workflow npm-release.yml
 gh run view "$RUN_ID"
 ```
 
-Record the workflow URL and `npm view @todu/forgejo@<version> version dist.integrity --json` result. A successful local build or saved publisher configuration is not proof of publication. Changing installed software or restarting a live daemon needs separate approval.
+Record the workflow URL and `npm view @todu/forgejo@<version> version dist.integrity --json` result; verify the downloaded tarball integrity and `latest` tag as well. Allow bounded registry propagation checks after publication rather than republishing or bumping on an immediate 404. A successful local build or saved publisher configuration is not proof of publication. Changing installed software or restarting a live daemon needs separate approval.
 
 ## One-time maintainer setup — separately approved
 
-This implementation only adds source configuration. It does not create npm packages, configure trusted publishers, create GitHub environments, change security settings, or dispatch publication.
+The first package has been bootstrapped locally by the maintainer and publicly verified. This does not establish that npm trusted publishing or the protected GitHub environment is configured. Source/version preparation never configures publishers, creates GitHub environments, changes security settings, or dispatches publication.
 
 1. Confirm package-name ownership/availability and the maintainer's permission to publish public packages in the `@todu` npm scope, then approve the exact `@todu/forgejo` artifact/version/channel. Do not create or alter scope membership/access opportunistically. An anonymous registry `E404` does not guarantee that a name can be claimed.
 2. The maintainer must bootstrap the first public npm package if it does not yet exist, because npm trusted-publisher settings require an existing package. Use the verified tarball from `.release`, not an unverified checkout. The maintainer handles npm login/2FA personally and runs the separately approved `npm publish <verified-tarball> --access public --tag <approved-channel> --ignore-scripts --registry=https://registry.npmjs.org`. Never share credentials or one-time codes with an agent. The automated workflow intentionally requires the initial package to exist and does not perform this bootstrap.

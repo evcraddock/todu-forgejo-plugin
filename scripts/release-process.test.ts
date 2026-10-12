@@ -105,47 +105,49 @@ describe("release version guards", () => {
     ).not.toBe(0);
   });
 
-  it("requires explicit publication inputs and keeps prereleases off latest", () => {
+  it("requires explicit publication inputs and only accepts the latest channel", () => {
     expect(run("generate-version.mjs", directory).status).toBe(0);
     expect(run("check-release.mjs", directory).status).not.toBe(0);
     expect(
       run("check-release.mjs", directory, "--version", "0.1.0", "--tag", "latest").status
     ).toBe(0);
-    replace(directory, "package.json", "0.1.0", "0.2.0-next.0");
-    replace(directory, "package-lock.json", "0.1.0", "0.2.0-next.0");
-    replace(directory, "CHANGELOG.md", "0.1.0", "0.2.0-next.0");
-    expect(run("generate-version.mjs", directory).status).toBe(0);
-    expect(
-      run("check-release.mjs", directory, "--version", "0.2.0-next.0", "--tag", "latest").status
-    ).not.toBe(0);
-    expect(
-      run("check-release.mjs", directory, "--version", "0.2.0-next.0", "--tag", "next").status
-    ).toBe(0);
+    for (const tag of ["next", "beta", "garbage"]) {
+      const result = run("check-release.mjs", directory, "--version", "0.1.0", "--tag", tag);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("--tag must be latest");
+    }
   });
 
-  it("accepts dated prerelease notes and consumed Changesets prerelease state", () => {
-    for (const file of ["package.json", "package-lock.json"]) {
-      replace(directory, file, "0.1.0", "0.1.1-next.0");
+  it.each(["0.2.0-next.0", "0.2.0-beta.1", "0.2.0-rc.1"])(
+    "rejects prerelease version %s on every channel",
+    (version) => {
+      for (const file of ["package.json", "package-lock.json", "CHANGELOG.md"]) {
+        replace(directory, file, "0.1.0", version);
+      }
+      expect(run("generate-version.mjs", directory).status).toBe(0);
+      for (const tag of ["latest", "next"]) {
+        expect(
+          run("check-release.mjs", directory, "--version", version, "--tag", tag).status
+        ).not.toBe(0);
+      }
     }
-    replace(directory, "CHANGELOG.md", "## 0.1.0", "## 0.1.1-next.0 - 2026-10-11");
+  );
+
+  it.each(["pre", "exit"])("rejects leftover Changesets %s mode before publishing", (mode) => {
+    expect(run("generate-version.mjs", directory).status).toBe(0);
     fs.writeFileSync(
       path.join(directory, ".changeset", "pre.json"),
-      JSON.stringify({ mode: "pre", tag: "next" })
+      JSON.stringify({ mode, tag: "next" })
     );
-    fs.mkdirSync(path.join(directory, ".changeset", "pre"));
-    fs.writeFileSync(
-      path.join(directory, ".changeset", "pre", "applied.md"),
-      '---\n"@todu/forgejo": patch\n---\nAlready applied.\n'
-    );
+    const result = run("check-release.mjs", directory, "--version", "0.1.0", "--tag", "latest");
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("prerelease mode");
+  });
+
+  it("accepts dated stable release notes", () => {
+    replace(directory, "CHANGELOG.md", "## 0.1.0", "## 0.1.0 - 2026-10-12");
     expect(run("generate-version.mjs", directory).status).toBe(0);
-    const result = run(
-      "check-release.mjs",
-      directory,
-      "--version",
-      "0.1.1-next.0",
-      "--tag",
-      "next"
-    );
+    const result = run("check-release.mjs", directory, "--version", "0.1.0", "--tag", "latest");
     expect(result.status, result.stdout + result.stderr).toBe(0);
   });
 

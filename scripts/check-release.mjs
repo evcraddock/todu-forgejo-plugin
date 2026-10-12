@@ -15,11 +15,14 @@ if (metadata.name !== "@todu/forgejo") {
 if (!values.version || values.version !== metadata.version) {
   throw new Error("--version must explicitly match package.json");
 }
-if (!["latest", "next"].includes(values.tag)) {
-  throw new Error("--tag must be latest or next");
+if (values.tag !== "latest") {
+  throw new Error("--tag must be latest");
 }
-if (semver.prerelease(metadata.version) && values.tag === "latest") {
-  throw new Error("Prereleases must use --tag next, never latest");
+if (semver.prerelease(metadata.version)) {
+  throw new Error("Release versions must be stable SemVer without prerelease suffixes");
+}
+if (fs.existsSync(".changeset/pre.json")) {
+  throw new Error("Exit Changesets prerelease mode and finish local versioning before publication");
 }
 if (metadata.private !== false)
   throw new Error("Release package must explicitly set private: false");

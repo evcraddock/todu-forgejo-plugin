@@ -197,6 +197,31 @@ it.each(["stable", "prerelease"])(
           JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8")).version
         ).toBe("0.1.1");
       }
+      // Each new release request adds one patch Changeset, never prerelease state.
+      for (const version of ["0.1.2", "0.1.3"]) {
+        fs.writeFileSync(
+          path.join(directory, ".changeset", "test-patch.md"),
+          '---\n"@todu/forgejo": patch\n---\nPrepare the next stable release.\n'
+        );
+        const next = spawnSync("npm", ["run", "version-packages"], options);
+        expect(next.status, next.stdout + next.stderr).toBe(0);
+        expect(
+          JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8")).version
+        ).toBe(version);
+        const nextLock = JSON.parse(
+          fs.readFileSync(path.join(directory, "package-lock.json"), "utf8")
+        );
+        expect(nextLock.version).toBe(version);
+        expect(nextLock.packages[""].version).toBe(version);
+        expect(fs.readFileSync(path.join(directory, "src/version.ts"), "utf8")).toContain(
+          `VERSION = "${version}"`
+        );
+        expect(fs.readFileSync(path.join(directory, "CHANGELOG.md"), "utf8")).toContain(
+          `## ${version}\n`
+        );
+        expect(fs.existsSync(path.join(directory, ".changeset/pre.json"))).toBe(false);
+        expect(fs.existsSync(path.join(directory, ".changeset/test-patch.md"))).toBe(false);
+      }
       expect(fs.readFileSync(path.join(root, "package.json"), "utf8")).toBe(originalPackage);
     } finally {
       fs.rmSync(directory, { recursive: true });
@@ -211,6 +236,21 @@ it("targets only the scoped registry package and canonical tarball in the workfl
   expect(workflow).toContain('npm view "@todu/forgejo@$EXPECTED_VERSION" version dist.integrity');
   expect(workflow).toContain('npm publish ".release/todu-forgejo-$EXPECTED_VERSION.tgz"');
   expect(workflow).not.toContain("todu-forgejo-plugin");
+});
+
+it("uses stable versions and the latest channel for the release skill and workflow", () => {
+  const metadata = JSON.parse(fs.readFileSync("package.json", "utf8"));
+  expect(metadata.version).toMatch(/^\d+\.\d+\.\d+$/);
+  expect(fs.existsSync(".changeset/pre.json")).toBe(false);
+  const skill = fs.readFileSync(".pi/skills/release/SKILL.md", "utf8");
+  expect(skill).toContain("name: release");
+  expect(skill).toContain('"@todu/forgejo": patch');
+  expect(skill).toContain("npm run version-packages");
+  expect(skill).toContain("0.1.1 → 0.1.2 → 0.1.3");
+  const workflow = fs.readFileSync(".github/workflows/npm-release.yml", "utf8");
+  expect(workflow).not.toContain("dist_tag:");
+  expect(workflow).not.toContain("inputs.dist_tag");
+  expect(workflow.match(/DIST_TAG: latest/g)).toHaveLength(2);
 });
 
 it("keeps source merges and tags outside the publication path", () => {
