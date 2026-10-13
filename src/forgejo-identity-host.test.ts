@@ -7,6 +7,7 @@ import { createDaemonLogger, createSyncPluginWorkerRuntime } from "@todu/daemon"
 import { createTodu, type ToduWithInternalTools } from "@todu/engine";
 
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
+import { createFileForgejoCommentLinkStore } from "@/forgejo-comment-links";
 import { createFileForgejoItemLinkStore } from "@/forgejo-links";
 import { createForgejoSyncProvider } from "@/forgejo-provider";
 import { createFileForgejoBindingRuntimeStore } from "@/forgejo-runtime";
@@ -140,6 +141,178 @@ describe("Forgejo identity recovery through the npm host", () => {
       fs.rmSync(directory, { recursive: true });
     }
   }, 20_000);
+
+  it.each(["bidirectional", "push"] as const)(
+    "preserves cancelled tasks and notes while other tasks sync through %s across restart",
+    async (strategy) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forgejo-host-cancelled-"));
+      const storagePath = path.join(directory, "host");
+      const storageDir = path.join(directory, "plugin");
+      let todu: ToduWithInternalTools | null = null;
+      try {
+        todu = (await createTodu({ storagePath })) as ToduWithInternalTools;
+        const project = value(await todu.project.create({ name: "Cancelled missing issues" }));
+        const binding = value(
+          await todu.integration.create({
+            provider: "forgejo",
+            projectId: project.id,
+            targetKind: "repository",
+            targetRef: "acme/roadmap",
+            strategy,
+            enabled: true,
+          })
+        );
+        const target = {
+          baseUrl: "https://code.example.com",
+          apiBaseUrl: "https://code.example.com/api/v1",
+          owner: "acme",
+          repo: "roadmap",
+        };
+        fs.mkdirSync(storageDir);
+        const links = createFileForgejoItemLinkStore(path.join(storageDir, "item-links.json"));
+        const commentLinks = createFileForgejoCommentLinkStore(
+          path.join(storageDir, "comment-links.json")
+        );
+        const originals = [];
+        const notes = [];
+        const provenance = [];
+        for (const number of [24, 30, 47]) {
+          const task = value(
+            await todu.task.create({
+              projectId: project.id,
+              title: `Cancelled original ${number}`,
+              status: "canceled",
+              externalId: `${target.baseUrl}/acme/roadmap#${number}`,
+              sourceUrl: `${target.baseUrl}/acme/roadmap/issues/${number}`,
+              description: "Preserve original imported description",
+              descriptionApproval: { state: "pendingApproval", sourceBindingId: binding.id },
+            })
+          );
+          originals.push(task);
+          const note = value(
+            await todu.note.create({
+              entityType: "task",
+              entityId: task.id,
+              content: "Preserve original imported note",
+              contentApproval: { state: "pendingApproval", sourceBindingId: binding.id },
+            })
+          );
+          notes.push(note);
+          provenance.push(
+            value(
+              await todu.__internal.syncRuntime.commentProvenance.upsert({
+                bindingId: binding.id,
+                provider: binding.provider,
+                targetKind: binding.targetKind,
+                targetRef: binding.targetRef,
+                localNoteId: note.id,
+                externalTaskId: task.externalId!,
+                externalCommentId: `missing-comment-${number}`,
+                lastMirroredAt: task.updatedAt,
+              })
+            )
+          );
+          // Bidirectional reproduces dotfiles' external references without saved
+          // item links. Push-only also covers persisted links and comment baselines.
+          if (strategy === "push") {
+            links.save({
+              bindingId: binding.id,
+              taskId: task.id,
+              issueNumber: number,
+              externalId: task.externalId!,
+              fieldSnapshots: { content: { title: task.title, description: task.description! } },
+            });
+            commentLinks.save({
+              bindingId: binding.id,
+              taskId: task.id,
+              noteId: note.id,
+              issueNumber: number,
+              forgejoCommentId: number + 100,
+              lastMirroredBody: note.content,
+              lastMirroredAt: note.updatedAt,
+            });
+          }
+        }
+        const other = value(
+          await todu.task.create({ projectId: project.id, title: "Other active task" })
+        );
+        const originalLinks = links.list(binding.id);
+        const originalCommentLinks = commentLinks.listAll();
+        const issueClient = createInMemoryForgejoIssueClient();
+        const createIssue = vi.spyOn(issueClient, "createIssue");
+        const createComment = vi.spyOn(issueClient, "createComment");
+        let previousAttempt: string | null = null;
+        for (let cycle = 0; cycle < 2; cycle++) {
+          const provider = createForgejoSyncProvider({ issueClient });
+          const runtime = createSyncPluginWorkerRuntime({
+            pluginName: "forgejo",
+            pluginVersion: provider.version,
+            modulePath: "/isolated-test",
+            authorityId: "isolated-test",
+            provider,
+            providerApiVersion: 4,
+            config: {
+              enabled: true,
+              settings: { baseUrl: target.baseUrl, token: "test-token", storageDir },
+              intervalMs: 60_000,
+              retryInitialMs: 60_000,
+              retryMaxMs: 60_000,
+            },
+            getTodu: () => todu,
+            logger: createDaemonLogger({ level: "error" }),
+          }).start();
+          try {
+            await vi.waitFor(
+              async () => {
+                const status = value(await todu!.integration.getStatus(binding.id));
+                expect(status.state).toBe("idle");
+                expect(status.lastAttemptedSyncAt).not.toBe(previousAttempt);
+                expect(status.lastSuccessfulSyncAt).not.toBeNull();
+                expect(status.lastErrorSummary).toBeNull();
+              },
+              { timeout: 5000 }
+            );
+          } finally {
+            await runtime.stop();
+          }
+          previousAttempt = value(await todu.integration.getStatus(binding.id)).lastAttemptedSyncAt;
+          for (const original of originals)
+            expect(value(await todu.task.get(original.id))).toEqual(original);
+          for (const note of notes) expect(value(await todu.note.get(note.id))).toEqual(note);
+          expect(
+            value(
+              await todu.__internal.syncRuntime.commentProvenance.list({ bindingId: binding.id })
+            )
+          ).toEqual(provenance);
+          expect(commentLinks.listAll()).toEqual(originalCommentLinks);
+          for (const link of originalLinks)
+            expect(links.getByTaskId(binding.id, link.taskId)).toEqual(link);
+          expect(value(await todu.task.list({ projectId: project.id }))).toHaveLength(
+            originals.length + 1
+          );
+          expect(value(await todu.task.get(other.id)).externalId).toBeDefined();
+          expect(createIssue).toHaveBeenCalledTimes(1);
+          expect(createComment).not.toHaveBeenCalled();
+          expect(
+            createFileForgejoBindingRuntimeStore(path.join(storageDir, "runtime-state.json")).get(
+              binding.id
+            )
+          ).toMatchObject({
+            retryAttempt: 0,
+            nextRetryAt: null,
+            lastError: null,
+          });
+          await todu.close();
+          todu = (await createTodu({ storagePath })) as ToduWithInternalTools;
+        }
+      } finally {
+        vi.restoreAllMocks();
+        await todu?.close();
+        fs.rmSync(directory, { recursive: true });
+      }
+    },
+    20_000
+  );
 
   it("keeps the host guard and error status when a provider returns a conflicting task link", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forgejo-host-link-guard-"));

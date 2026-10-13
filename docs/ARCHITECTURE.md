@@ -514,6 +514,8 @@ Deletion or disappearance of the linked issue/task maps to cancelation:
 - Forgejo issue target becomes closed + `status:canceled`
 - todu task target becomes `canceled`
 
+During push, an already cancelled local task whose referenced or linked issue is unavailable is a no-op rather than a binding-wide identity failure. Preserve task/comment identity and snapshot state, skip its comment push, and continue other tasks. This exception applies only to an unavailable issue (a null issue read or issue-update HTTP 404), not authentication/permission or transient failures, non-cancelled tasks, or conflicting identities. Available linked issues still receive cancellation. No deletion tombstone or permanent cancellation cache is inferred. API v4 pull does not receive current local task statuses, so missing linked comment endpoints remain blocking there until host support can establish current cancellation safely.
+
 Comments no longer remain the exception. Mirrored comment deletes do not propagate across systems. A deleted Forgejo comment or deleted todu note leaves the opposite side intact, which keeps steady-state sync incremental and avoids deletion-driven full comment scans.
 
 ## Polling, Retry, and Observability

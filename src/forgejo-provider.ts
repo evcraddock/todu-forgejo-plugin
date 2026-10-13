@@ -516,6 +516,7 @@ export function createForgejoSyncProvider(
           issueReadCount: 0,
           skippedLinkedTasks: 0,
           skippedIssueCreates: 0,
+          unavailableCancelledTaskIds: [],
         };
         logger.debug("skipping push due to binding strategy", logContext);
         return { commentLinks: [], taskLinks: [] };
@@ -614,11 +615,12 @@ export function createForgejoSyncProvider(
           progressAt: new Date().toISOString(),
         };
 
+        const unavailableCancelledTaskIds = new Set(lastPushResult.unavailableCancelledTaskIds);
         const pushCommentsResult = await pushComments({
           binding,
           issueClient,
           target,
-          tasks,
+          tasks: tasks.filter((task) => !unavailableCancelledTaskIds.has(task.localTaskId)),
           itemLinkStore: linkStore,
           commentLinkStore,
           loadTaskNotes: options.loadTaskNotes,
