@@ -159,34 +159,42 @@ describe("cancelled tasks with unavailable Forgejo issues", () => {
     }
   );
 
-  it("ignores an update-404 race and preserves item and comment snapshots", async () => {
-    const { issueClient, linkStore, commentLinkStore, original, other } = fixture();
-    issueClient.seedIssues(target, [
-      {
-        number: 9,
-        externalId,
-        title: original.title,
-        state: "open",
-        labels: ["status:active", "priority:medium"],
-        assignees: [],
-        createdAt: binding.createdAt,
-      },
-    ]);
-    const update = issueClient.updateIssue.bind(issueClient);
-    vi.spyOn(issueClient, "updateIssue").mockImplementation(async (target, number, input) => {
-      if (number === 9) throw new ForgejoHttpError(404, "PATCH", "/issues/9", "not found");
-      return update(target, number, input);
-    });
-    const originalLinks = linkStore.listAll();
-    const originalComments = commentLinkStore.listAll();
-    const provider = createForgejoSyncProvider({ issueClient, linkStore, commentLinkStore });
-    await provider.initialize({ settings: { baseUrl: target.baseUrl, token: "test-token" } });
-    await provider.push(binding, [original, other], project);
-    expect(linkStore.getByTaskId(binding.id, original.localTaskId)).toEqual(originalLinks[0]);
-    expect(commentLinkStore.listAll()).toEqual(originalComments);
-    expect(issueClient.snapshotComments(target, 9)).toEqual([]);
-    expect(provider.getState().runtimeStates[0].lastError).toBeNull();
-  });
+  it.each(["stored update", "stored hydration", "external ID"])(
+    "ignores an update-404 race for %s and preserves pre-call state",
+    async (reference) => {
+      const { issueClient, linkStore, commentLinkStore, original, other } = fixture(reference);
+      issueClient.seedIssues(target, [
+        {
+          number: 9,
+          externalId,
+          title: original.title,
+          state: "open",
+          labels: ["status:active", "priority:medium"],
+          assignees: [],
+          createdAt: binding.createdAt,
+        },
+      ]);
+      const update = issueClient.updateIssue.bind(issueClient);
+      vi.spyOn(issueClient, "updateIssue").mockImplementation(async (target, number, input) => {
+        if (number === 9) throw new ForgejoHttpError(404, "PATCH", "/issues/9", "not found");
+        return update(target, number, input);
+      });
+      const originalLinks = linkStore.listAll();
+      const originalComments = commentLinkStore.listAll();
+      const provider = createForgejoSyncProvider({ issueClient, linkStore, commentLinkStore });
+      await provider.initialize({ settings: { baseUrl: target.baseUrl, token: "test-token" } });
+      const result = await provider.push(binding, [original, other], project);
+      expect(result.taskLinks?.some((link) => link.localTaskId === original.localTaskId)).toBe(
+        false
+      );
+      expect(linkStore.getByTaskId(binding.id, original.localTaskId)).toEqual(
+        originalLinks[0] ?? null
+      );
+      expect(commentLinkStore.listAll()).toEqual(originalComments);
+      expect(issueClient.snapshotComments(target, 9)).toEqual([]);
+      expect(provider.getState().runtimeStates[0].lastError).toBeNull();
+    }
+  );
 
   it("still closes an available issue for a cancelled task", async () => {
     const { issueClient, linkStore, commentLinkStore, original } = fixture();

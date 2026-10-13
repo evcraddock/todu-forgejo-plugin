@@ -403,15 +403,20 @@ export async function bootstrapTasksToForgejoIssues(input: {
           continue;
         }
 
-        if (!existingLink.lastMirroredAt) {
-          hydratedLinkedTasks += 1;
-          input.linkStore.save({
-            ...existingLink,
-            lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
-          });
-        }
+        // Stage hydration until we know the issue needs no write or the write
+        // succeeds. An update-404 cancellation skip must leave the link untouched.
+        const saveHydration = (): void => {
+          if (!existingLink.lastMirroredAt) {
+            input.linkStore.save({
+              ...existingLink,
+              lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
+            });
+          }
+        };
+        if (!existingLink.lastMirroredAt) hydratedLinkedTasks += 1;
 
         if (!shouldPushTaskUpdate(task, existingIssue)) {
+          saveHydration();
           skippedLinkedTasks += 1;
           recordTaskAction({
             taskId: localTaskId,
@@ -425,6 +430,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
         }
 
         if (input.shouldSkipIssueUpdate?.(existingIssue)) {
+          saveHydration();
           recordTaskAction({
             taskId: localTaskId,
             title: task.title,
@@ -489,45 +495,46 @@ export async function bootstrapTasksToForgejoIssues(input: {
         continue;
       }
 
-      const createdLink = linkTaskToIssue(task, existingIssue);
-      recordTaskAction({
-        taskId: localTaskId,
-        title: task.title,
-        action: "link",
-        issueNumber: existingIssue.number,
-        externalId: createdLink.externalId,
-        reason: "matched task externalId",
-      });
-
-      if (
-        shouldPushTaskUpdate(task, existingIssue) &&
-        !input.shouldSkipIssueUpdate?.(existingIssue)
-      ) {
+      let linkedIssue = existingIssue;
+      const shouldUpdate =
+        shouldPushTaskUpdate(task, existingIssue) && !input.shouldSkipIssueUpdate?.(existingIssue);
+      if (shouldUpdate) {
         const issueUpdate = createForgejoIssueUpdateFromTask(task);
         await ensureLabelsExist(issueUpdate.labels ?? []);
         try {
-          const updatedIssue = await input.issueClient.updateIssue(
+          linkedIssue = await input.issueClient.updateIssue(
             target,
             matchingExternalId.issueNumber,
             issueUpdate
           );
-          input.linkStore.save({
-            ...createdLink,
-            lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
-          });
-          updatedIssues.push(updatedIssue);
-          recordTaskAction({
-            taskId: localTaskId,
-            title: task.title,
-            action: "update",
-            issueNumber: updatedIssue.number,
-            externalId: createdLink.externalId,
-            reason: "linked task externalId before updating issue",
-          });
         } catch (error) {
           if (!isForgejoIssueNotFoundError(error)) throw error;
           skipUnavailableIssue(task, matchingExternalId.issueNumber);
+          continue;
         }
+      }
+
+      // Do not persist/return a newly discovered link until a required remote
+      // update succeeds. Otherwise a skipped race adds a missing-comment pull target.
+      const createdLink = linkTaskToIssue(task, linkedIssue);
+      recordTaskAction({
+        taskId: localTaskId,
+        title: task.title,
+        action: "link",
+        issueNumber: linkedIssue.number,
+        externalId: createdLink.externalId,
+        reason: "matched task externalId",
+      });
+      if (shouldUpdate) {
+        updatedIssues.push(linkedIssue);
+        recordTaskAction({
+          taskId: localTaskId,
+          title: task.title,
+          action: "update",
+          issueNumber: linkedIssue.number,
+          externalId: createdLink.externalId,
+          reason: "updated issue matched by task externalId",
+        });
       } else {
         skippedLinkedTasks += 1;
       }

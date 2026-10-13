@@ -8,6 +8,7 @@ import { createTodu, type ToduWithInternalTools } from "@todu/engine";
 
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
 import { createFileForgejoCommentLinkStore } from "@/forgejo-comment-links";
+import { ForgejoHttpError } from "@/forgejo-http-error";
 import { createFileForgejoItemLinkStore } from "@/forgejo-links";
 import { createForgejoSyncProvider } from "@/forgejo-provider";
 import { createFileForgejoBindingRuntimeStore } from "@/forgejo-runtime";
@@ -142,9 +143,13 @@ describe("Forgejo identity recovery through the npm host", () => {
     }
   }, 20_000);
 
-  it.each(["bidirectional", "push"] as const)(
-    "preserves cancelled tasks and notes while other tasks sync through %s across restart",
-    async (strategy) => {
+  it.each([
+    { strategy: "bidirectional" as const, update404: false },
+    { strategy: "push" as const, update404: false },
+    { strategy: "bidirectional" as const, update404: true },
+  ])(
+    "preserves cancelled tasks and notes through $strategy across restart (update-404: $update404)",
+    async ({ strategy, update404 }) => {
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), "forgejo-host-cancelled-"));
       const storagePath = path.join(directory, "host");
       const storageDir = path.join(directory, "plugin");
@@ -241,6 +246,33 @@ describe("Forgejo identity recovery through the npm host", () => {
         const issueClient = createInMemoryForgejoIssueClient();
         const createIssue = vi.spyOn(issueClient, "createIssue");
         const createComment = vi.spyOn(issueClient, "createComment");
+        if (update404) {
+          const getIssue = issueClient.getIssue.bind(issueClient);
+          const seen = new Set<number>();
+          vi.spyOn(issueClient, "getIssue").mockImplementation(async (target, number) => {
+            if ([24, 30, 47].includes(number) && !seen.has(number)) {
+              seen.add(number);
+              return {
+                number,
+                externalId: `${target.baseUrl}/acme/roadmap#${number}`,
+                title: `Cancelled original ${number}`,
+                state: "open",
+                labels: [],
+                assignees: [],
+                createdAt: "2026-01-01T00:00:00.000Z",
+              };
+            }
+            return getIssue(target, number);
+          });
+          const listComments = issueClient.listComments.bind(issueClient);
+          vi.spyOn(issueClient, "listComments").mockImplementation(
+            async (target, number, options) => {
+              if ([24, 30, 47].includes(number))
+                throw new ForgejoHttpError(404, "GET", `/issues/${number}/comments`, "not found");
+              return listComments(target, number, options);
+            }
+          );
+        }
         let previousAttempt: string | null = null;
         for (let cycle = 0; cycle < 2; cycle++) {
           const provider = createForgejoSyncProvider({ issueClient });
@@ -287,6 +319,9 @@ describe("Forgejo identity recovery through the npm host", () => {
           expect(commentLinks.listAll()).toEqual(originalCommentLinks);
           for (const link of originalLinks)
             expect(links.getByTaskId(binding.id, link.taskId)).toEqual(link);
+          if (update404) {
+            for (const task of originals) expect(links.getByTaskId(binding.id, task.id)).toBeNull();
+          }
           expect(value(await todu.task.list({ projectId: project.id }))).toHaveLength(
             originals.length + 1
           );
