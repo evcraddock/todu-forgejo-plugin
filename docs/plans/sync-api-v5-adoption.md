@@ -2,7 +2,7 @@
 
 ## Status
 
-Design investigation for `task-417bb5b9`. Setup and isolated investigation were approved; production implementation and live cutover are not approved. The plugin remains registered as API v4. The design decision below must be resolved before changing that registration.
+Design investigation for `task-417bb5b9`. The user approved Option B: host-supported safe adoption. High-priority Todu task `task-6daf1fb2` supplies the host prerequisite, building on existing current-local-context task `task-c5d79d45`. The Forgejo task is waiting on that support; the plugin remains registered as API v4. Do not implement Option A by default, change the provider registration before the supported host capability is available, or perform a live cutover. Concrete contract implementation and review gates still apply.
 
 ## Goal and boundaries
 
@@ -63,7 +63,7 @@ A workflow-only v5 update is supported when its baseline is known, but it is not
 
 Do not falsify a baseline or clock to make cancellation win. The deletion follow-up needs either a separately authorized status-only operator action, or a versioned host capability that represents confirmed operator intent without treating it as ordinary remote last-write-wins. These are alternative designs; neither is implemented or silently selected here.
 
-## Rollout options requiring a human decision
+## Assessed rollout options
 
 ### A. Plugin-only, operator-assisted cutover
 
@@ -83,7 +83,7 @@ Identify an upstream contract prerequisite providing these capabilities, without
 - A documented route for durable mixed/partially applied v4 batches, or an explicitly enforced drain phase. Recovery must retain the original batch, local edits, identities, and read boundaries.
 - If sync itself must enforce confirmed deletion, a narrowly scoped operator-authorized workflow action with identity checks and guarded status-only persistence; keep this separate from ordinary timestamp conflict resolution.
 
-After the published host provides the chosen initialization path, implement the plugin adapter and run the same published-host integration matrix. Host work is not authorized by this plugin task. A new upstream task must be drafted and approved separately if this option is selected.
+Option B is selected. Todu task `task-6daf1fb2` owns safe initialization, persisted-value receipts, legacy recovery, and the explicit workflow-intent/guarded status-only path. It depends on `task-c5d79d45` for host-supplied local context rather than inventing a competing context service. After the supported host capability is available, implement the plugin adapter and run the published-host integration matrix. The host task has its own readiness, plan, review, and merge gates; this plugin task does not authorize editing Todu core or deploying either project.
 
 ## Shared plugin implementation stages after design approval
 
@@ -107,8 +107,10 @@ Exercise pull-only, push-only, bidirectional, and disabled bindings; fresh boots
 
 Update architecture/storage compatibility and operational recovery documentation. Run format, lint, typecheck, tests, build, pre-PR checks, and relevant isolated dev checks. Open a task-linked PR and obtain independent review. Human merge approval and separate close-gate approval remain mandatory.
 
-## Recommendation and approval gate
+## Approved decision and next gate
 
-Do not change the provider registration yet. Select option A only if the additional manual initialization/drain workflow and the separately scoped cancellation action are acceptable. For automatic safe adoption across pull-only and bidirectional operation, prefer option B's explicit initialization/observation capability rather than a fabricated v5 baseline or hidden runtime CLI workaround.
+The user selected Option B and requested the high-priority Todu prerequisite, now tracked as `task-6daf1fb2`. It is an explicit dependency of `task-417bb5b9`. Keep the Forgejo task waiting until the supported host implementation is available. The deletion follow-up `task-f4d98619` remains waiting on plugin adoption.
+
+Do not change the provider registration yet. Adopt the explicitly negotiated version/capability delivered by the host task rather than hardcoding v5 if the extension requires a successor version. Review the concrete capability, initialization rules, replay strategy, and workflow-intent semantics before resuming plugin implementation. Neither the manual Option A workaround nor a hidden runtime CLI workaround is selected.
 
 The previous statement that no Todu change would be needed was too broad: known-baseline v5 updates require only plugin changes, but the investigated v5 interface does not itself provide the missing initialization/observation and authoritative cancellation semantics described above. Whether an upstream change is required depends on the operational policy chosen here.
