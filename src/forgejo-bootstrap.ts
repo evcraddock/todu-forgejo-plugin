@@ -58,6 +58,7 @@ export interface ForgejoBootstrapExportResult {
   issueReadCount: number;
   skippedLinkedTasks: number;
   skippedIssueCreates: number;
+  unavailableCancelledTaskIds: ExportedTaskInput["localTaskId"][];
 }
 
 export async function bootstrapForgejoIssuesToTasks(input: {
@@ -161,6 +162,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
   let issueReadCount = 0;
   let skippedLinkedTasks = 0;
   let skippedIssueCreates = 0;
+  const unavailableCancelledTaskIds: ExportedTaskInput["localTaskId"][] = [];
 
   const target = {
     baseUrl: input.baseUrl,
@@ -210,6 +212,33 @@ export async function bootstrapTasksToForgejoIssues(input: {
 
   const recordTaskAction = (action: ForgejoBootstrapTaskAction): void => {
     taskActions.push(action);
+  };
+
+  const skipUnavailableIssue = (task: ExportedTaskInput, issueNumber: number): void => {
+    if (task.status !== "canceled") {
+      throw unavailableIssue(task, issueNumber);
+    }
+
+    // Cancellation is already satisfied when its remote issue is unavailable.
+    // Preserve identities/baselines and exclude this task from comment pushes too.
+    unavailableCancelledTaskIds.push(task.localTaskId);
+    skippedLinkedTasks += 1;
+    recordTaskAction({
+      taskId: task.localTaskId,
+      title: task.title,
+      action: "skip",
+      issueNumber,
+      reason: "cancelled task's remote issue is unavailable; existing identity retained",
+    });
+  };
+
+  const getIssue = async (issueNumber: number): Promise<ForgejoIssue | null> => {
+    try {
+      return await input.issueClient.getIssue(target, issueNumber);
+    } catch (error) {
+      if (isForgejoIssueNotFoundError(error)) return null;
+      throw error;
+    }
   };
 
   const linkTaskToIssue = (task: ExportedTaskInput, issue: ForgejoIssue): ForgejoItemLink => {
@@ -363,22 +392,31 @@ export async function bootstrapTasksToForgejoIssues(input: {
       localTaskId as ForgejoItemLink["taskId"]
     );
     if (existingLink) {
-      if (!existingLink.lastMirroredAt) {
+      // Even an unchanged cancelled task may have notes to push. Verify the
+      // issue still exists before any comment-link reconciliation or writes.
+      if (!existingLink.lastMirroredAt || task.status === "canceled") {
         issueReadCount += 1;
-        const existingIssue = await input.issueClient.getIssue(target, existingLink.issueNumber);
-        hydratedLinkedTasks += 1;
+        const existingIssue = await getIssue(existingLink.issueNumber);
 
         if (!existingIssue) {
-          throw unavailableIssue(task, existingLink.issueNumber);
+          skipUnavailableIssue(task, existingLink.issueNumber);
+          continue;
         }
 
-        const hydratedLink: ForgejoItemLink = {
-          ...existingLink,
-          lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
+        // Stage hydration until we know the issue needs no write or the write
+        // succeeds. An update-404 cancellation skip must leave the link untouched.
+        const saveHydration = (): void => {
+          if (!existingLink.lastMirroredAt) {
+            input.linkStore.save({
+              ...existingLink,
+              lastMirroredAt: existingIssue.updatedAt ?? existingIssue.createdAt,
+            });
+          }
         };
-        input.linkStore.save(hydratedLink);
+        if (!existingLink.lastMirroredAt) hydratedLinkedTasks += 1;
 
         if (!shouldPushTaskUpdate(task, existingIssue)) {
+          saveHydration();
           skippedLinkedTasks += 1;
           recordTaskAction({
             taskId: localTaskId,
@@ -392,6 +430,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
         }
 
         if (input.shouldSkipIssueUpdate?.(existingIssue)) {
+          saveHydration();
           recordTaskAction({
             taskId: localTaskId,
             title: task.title,
@@ -441,7 +480,7 @@ export async function bootstrapTasksToForgejoIssues(input: {
           throw error;
         }
 
-        throw unavailableIssue(task, existingLink.issueNumber);
+        skipUnavailableIssue(task, existingLink.issueNumber);
       }
       continue;
     }
@@ -449,48 +488,52 @@ export async function bootstrapTasksToForgejoIssues(input: {
     const matchingExternalId = getMatchingExternalId(task, input.baseUrl, input.owner, input.repo);
     if (matchingExternalId) {
       issueReadCount += 1;
-      const existingIssue = await input.issueClient.getIssue(
-        target,
-        matchingExternalId.issueNumber
-      );
+      const existingIssue = await getIssue(matchingExternalId.issueNumber);
 
       if (!existingIssue) {
-        throw unavailableIssue(task, matchingExternalId.issueNumber);
+        skipUnavailableIssue(task, matchingExternalId.issueNumber);
+        continue;
       }
 
-      const createdLink = linkTaskToIssue(task, existingIssue);
+      let linkedIssue = existingIssue;
+      const shouldUpdate =
+        shouldPushTaskUpdate(task, existingIssue) && !input.shouldSkipIssueUpdate?.(existingIssue);
+      if (shouldUpdate) {
+        const issueUpdate = createForgejoIssueUpdateFromTask(task);
+        await ensureLabelsExist(issueUpdate.labels ?? []);
+        try {
+          linkedIssue = await input.issueClient.updateIssue(
+            target,
+            matchingExternalId.issueNumber,
+            issueUpdate
+          );
+        } catch (error) {
+          if (!isForgejoIssueNotFoundError(error)) throw error;
+          skipUnavailableIssue(task, matchingExternalId.issueNumber);
+          continue;
+        }
+      }
+
+      // Do not persist/return a newly discovered link until a required remote
+      // update succeeds. Otherwise a skipped race adds a missing-comment pull target.
+      const createdLink = linkTaskToIssue(task, linkedIssue);
       recordTaskAction({
         taskId: localTaskId,
         title: task.title,
         action: "link",
-        issueNumber: existingIssue.number,
+        issueNumber: linkedIssue.number,
         externalId: createdLink.externalId,
         reason: "matched task externalId",
       });
-
-      if (
-        shouldPushTaskUpdate(task, existingIssue) &&
-        !input.shouldSkipIssueUpdate?.(existingIssue)
-      ) {
-        const issueUpdate = createForgejoIssueUpdateFromTask(task);
-        await ensureLabelsExist(issueUpdate.labels ?? []);
-        const updatedIssue = await input.issueClient.updateIssue(
-          target,
-          matchingExternalId.issueNumber,
-          issueUpdate
-        );
-        input.linkStore.save({
-          ...createdLink,
-          lastMirroredAt: updatedIssue.updatedAt ?? updatedIssue.createdAt,
-        });
-        updatedIssues.push(updatedIssue);
+      if (shouldUpdate) {
+        updatedIssues.push(linkedIssue);
         recordTaskAction({
           taskId: localTaskId,
           title: task.title,
           action: "update",
-          issueNumber: updatedIssue.number,
+          issueNumber: linkedIssue.number,
           externalId: createdLink.externalId,
-          reason: "linked task externalId before updating issue",
+          reason: "updated issue matched by task externalId",
         });
       } else {
         skippedLinkedTasks += 1;
@@ -546,12 +589,15 @@ export async function bootstrapTasksToForgejoIssues(input: {
     issueReadCount,
     skippedLinkedTasks,
     skippedIssueCreates,
+    unavailableCancelledTaskIds,
   };
 }
 
 function isForgejoIssueNotFoundError(error: unknown): boolean {
+  const status = getForgejoHttpStatus(error);
+  if (status !== null) return status === 404;
   const message = error instanceof Error ? error.message : String(error);
-  return getForgejoHttpStatus(error) === 404 || /issue not found/i.test(message);
+  return /issue not found/i.test(message);
 }
 
 function isForgejoIssueCreateConflictError(error: unknown): boolean {
