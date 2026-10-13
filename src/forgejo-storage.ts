@@ -24,6 +24,7 @@ export const FORGEJO_STORAGE_STATE_FILES = [
   "item-links.json",
   "comment-links.json",
   "runtime-state.json",
+  "issue-tombstones.json",
 ] as const;
 
 export interface ForgejoLegacyStorageMigrationOptions {

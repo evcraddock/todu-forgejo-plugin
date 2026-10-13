@@ -137,6 +137,12 @@ export {
 } from "@/forgejo-provider";
 export type { ForgejoPendingPull, ForgejoPullCheckpoint } from "@/forgejo-pull-checkpoint";
 export {
+  createFileForgejoIssueTombstoneStore,
+  createInMemoryForgejoIssueTombstoneStore,
+  type ForgejoIssueTombstone,
+  type ForgejoIssueTombstoneStore,
+} from "@/forgejo-tombstones";
+export {
   computeNextForgejoRetryDelay,
   createFileForgejoBindingRuntimeStore,
   createInitialForgejoRuntimeState,

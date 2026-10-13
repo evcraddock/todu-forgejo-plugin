@@ -7,6 +7,7 @@ The Forgejo plugin state files are:
 - `item-links.json`
 - `comment-links.json`
 - `runtime-state.json`
+- `issue-tombstones.json` (optional until a confirmed deletion is recorded)
 
 The migration script moves only those files. It does not overwrite destination files, leaves unrelated files in the old directory, and removes the old directory only if it becomes empty.
 
@@ -33,6 +34,14 @@ Expect extra API reads on the first eligible pull after upgrade. Back up plugin 
 Snapshot values use published core group types. Labels and stable assignee identities are deduplicated and sorted; an account ID takes precedence over login/display-name metadata, while login-only identities remain exact. Explicit empty values represent deliberately empty content/sets, not missing history. In-memory and file-backed stores share these rules and reject malformed snapshot data instead of silently resetting it. Metadata-only link updates and same-identity task-ID relinking preserve existing baselines. Acknowledgment preserves current baselines rather than reverting to the copies staged earlier.
 
 Protect state backups: content baselines include the mirrored description. Keep snapshots with their binding and external identity during migration/repair. Do not copy baselines onto an unrelated repository or issue, or treat a legacy missing group as an empty value. Field-group reconciliation and winner selection remain separate follow-up tasks.
+
+## Issue-deletion tombstones
+
+`issue-tombstones.json` stores binding-scoped confirmed-deletion evidence: `bindingId`, `taskId`, `externalId`, `issueNumber`, `deletedAt`, `reason`, and `source`. The provider selects a file-backed store under configured `settings.storageDir`, or an in-memory store when no storage directory is configured. Existing installations without this file load with an empty tombstone store; loading does not create the file or alter other state. File-backed records survive provider restart and use the same owner-only, flushed atomic writes as the other state files.
+
+The exported tombstone stores support task, issue-number, and external-ID lookup; binding-scoped and global lists; save; and explicit removal by binding/task. Each binding permits one tombstone per task and remote issue. Identical saves are idempotent. Tombstones are immutable: a conflicting identity, timestamp, reason, or source fails explicitly without replacing existing evidence. Replacement requires explicit removal first. Malformed or conflicting files fail rather than silently resetting deletion history. Keep this file with the other state files during directory migration and backups.
+
+This is a storage foundation only. It does not detect remote deletion, interpret a 404, cancel a Todu task, or suppress issue creation yet. Those behaviors belong to the deletion-handling follow-up. Only confirmed deletion may be recorded; an ambiguous 404 is not deletion evidence. Do not remove a tombstone casually: once the follow-up consumes these records, removal can permit recreation.
 
 ## Destination directory
 

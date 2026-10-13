@@ -210,6 +210,7 @@ Inside `storageDir`, the plugin should keep separate files or equivalent DB coll
 - `item-links.json`
 - `comment-links.json`
 - `runtime-state.json`
+- `issue-tombstones.json` (confirmed-deletion storage foundation; not yet consumed by sync)
 - optional diagnostics/error snapshots
 
 Legacy migration only moves the known state files above. It leaves unrelated files in place, removes the legacy directory only if it becomes empty, and fails clearly rather than overwriting current state. Operators can run `npm run migrate:forgejo-storage -- --from <absolute-old-dir> --to <absolute-new-dir>` on each affected machine before changing config; the script is dry-run by default and requires `--write` to move files. `settings.legacyStorageDir` remains available for one-time daemon-start migration when a scripted migration is not practical.
@@ -278,6 +279,9 @@ Keep the same logical stores as the GitHub plugin:
 - `item_links`: binding id, task id, issue number, external id, optional per-field-group mirrored snapshots
 - `comment_links`: binding id, task id, note id, issue number, comment id
 - `binding_runtime_state`: issue/comment pull cursors, push-success timestamp, retry state, and failure diagnostics
+- `issue_tombstones`: binding id, task id, external id, issue number, deletion time, reason, and source for confirmed deletion; immutable records with idempotent saves and explicit removal
+
+Tombstones use a separate `issue-tombstones.json` store under configured plugin storage (or memory without `storageDir`). Missing files remain compatible with older installations. This storage foundation does not detect deletion, cancel tasks, or prevent recreation until the deletion-handling follow-up consumes the records. See [Forgejo Storage Migration](FORGEJO-STORAGE-MIGRATION.md#issue-deletion-tombstones).
 
 ### Field-group snapshot storage
 

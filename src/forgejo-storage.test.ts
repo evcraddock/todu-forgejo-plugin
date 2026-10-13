@@ -27,6 +27,7 @@ describe("forgejo storage", () => {
     fs.writeFileSync(path.join(legacyStorageDir, "item-links.json"), "[]\n", "utf8");
     fs.writeFileSync(path.join(legacyStorageDir, "comment-links.json"), "[]\n", "utf8");
     fs.writeFileSync(path.join(legacyStorageDir, "runtime-state.json"), "[]\n", "utf8");
+    fs.writeFileSync(path.join(legacyStorageDir, "issue-tombstones.json"), "[]\n", "utf8");
 
     const result = migrateForgejoLegacyStorage({ storageDir, legacyStorageDir });
 
@@ -34,10 +35,12 @@ describe("forgejo storage", () => {
       "item-links.json",
       "comment-links.json",
       "runtime-state.json",
+      "issue-tombstones.json",
     ]);
     expect(result.skippedFiles).toEqual([]);
     expect(fs.readFileSync(path.join(storageDir, "item-links.json"), "utf8")).toBe("[]\n");
     expect(fs.existsSync(path.join(legacyStorageDir, "item-links.json"))).toBe(false);
+    expect(fs.readFileSync(path.join(storageDir, "issue-tombstones.json"), "utf8")).toBe("[]\n");
     expect(fs.existsSync(legacyStorageDir)).toBe(false);
   });
 
@@ -52,7 +55,11 @@ describe("forgejo storage", () => {
     const result = migrateForgejoLegacyStorage({ storageDir, legacyStorageDir });
 
     expect(result.migratedFiles).toEqual(["item-links.json"]);
-    expect(result.skippedFiles).toEqual(["comment-links.json", "runtime-state.json"]);
+    expect(result.skippedFiles).toEqual([
+      "comment-links.json",
+      "runtime-state.json",
+      "issue-tombstones.json",
+    ]);
     expect(fs.existsSync(path.join(storageDir, "item-links.json"))).toBe(true);
     expect(fs.existsSync(path.join(legacyStorageDir, "custom.json"))).toBe(true);
   });
@@ -87,6 +94,7 @@ describe("forgejo storage", () => {
       "item-links.json",
       "comment-links.json",
       "runtime-state.json",
+      "issue-tombstones.json",
     ]);
   });
 });
