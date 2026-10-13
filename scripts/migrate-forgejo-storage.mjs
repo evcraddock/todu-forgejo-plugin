@@ -4,7 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const FORGEJO_STORAGE_STATE_FILES = ["item-links.json", "comment-links.json", "runtime-state.json"];
+const FORGEJO_STORAGE_STATE_FILES = [
+  "item-links.json",
+  "comment-links.json",
+  "runtime-state.json",
+  "issue-tombstones.json",
+];
 
 function parseArgs(argv) {
   const args = {

@@ -90,6 +90,12 @@ import {
   type ForgejoRetryConfig,
   type ForgejoRuntimeFailureProgress,
 } from "@/forgejo-runtime";
+import {
+  createFileForgejoIssueTombstoneStore,
+  createInMemoryForgejoIssueTombstoneStore,
+  type ForgejoIssueTombstone,
+  type ForgejoIssueTombstoneStore,
+} from "@/forgejo-tombstones";
 import { FORGEJO_IDENTITY_ERROR_PREFIX, ForgejoIdentityError } from "@/forgejo-identity";
 import { getForgejoHttpStatus } from "@/forgejo-http-error";
 import { VERSION } from "@/version";
@@ -102,6 +108,7 @@ export interface ForgejoProviderState {
   settings: ForgejoProviderSettings | null;
   itemLinks: ForgejoItemLink[];
   commentLinks: ForgejoCommentLink[];
+  issueTombstones: ForgejoIssueTombstone[];
   runtimeStates: ForgejoBindingRuntimeState[];
   loopPreventionWrites: ForgejoWriteRecord[];
   logEntries: ReturnType<ForgejoSyncLogger["getEntries"]>;
@@ -123,6 +130,7 @@ export interface CreateForgejoSyncProviderOptions {
   issueClient?: ForgejoIssueClient;
   linkStore?: ForgejoItemLinkStore;
   commentLinkStore?: ForgejoCommentLinkStore;
+  tombstoneStore?: ForgejoIssueTombstoneStore;
   runtimeStore?: ForgejoBindingRuntimeStore;
   loopPreventionStore?: ForgejoLoopPreventionStore;
   logger?: ForgejoSyncLogger;
@@ -157,6 +165,7 @@ export function createForgejoSyncProvider(
   let issueClient: ForgejoIssueClient = options.issueClient ?? createInMemoryForgejoIssueClient();
   let linkStore = options.linkStore ?? createInMemoryForgejoItemLinkStore();
   let commentLinkStore = options.commentLinkStore ?? createInMemoryForgejoCommentLinkStore();
+  let tombstoneStore = options.tombstoneStore ?? createInMemoryForgejoIssueTombstoneStore();
   let runtimeStore = options.runtimeStore ?? createInMemoryForgejoBindingRuntimeStore();
   let loopPreventionStore = options.loopPreventionStore ?? createForgejoLoopPreventionStore();
   const logger = options.logger ?? createForgejoSyncLogger();
@@ -269,6 +278,11 @@ export function createForgejoSyncProvider(
           path.join(settings.storageDir, "comment-links.json")
         );
       }
+      if (!options.tombstoneStore && settings.storageDir) {
+        tombstoneStore = createFileForgejoIssueTombstoneStore(
+          path.join(settings.storageDir, "issue-tombstones.json")
+        );
+      }
       if (!options.runtimeStore && settings.storageDir) {
         runtimeStore = createFileForgejoBindingRuntimeStore(
           path.join(settings.storageDir, "runtime-state.json")
@@ -291,6 +305,9 @@ export function createForgejoSyncProvider(
       }
       if (!options.commentLinkStore) {
         commentLinkStore = createInMemoryForgejoCommentLinkStore();
+      }
+      if (!options.tombstoneStore) {
+        tombstoneStore = createInMemoryForgejoIssueTombstoneStore();
       }
       if (!options.runtimeStore) {
         runtimeStore = createInMemoryForgejoBindingRuntimeStore();
@@ -699,6 +716,7 @@ export function createForgejoSyncProvider(
         settings,
         itemLinks: linkStore.listAll(),
         commentLinks: commentLinkStore.listAll(),
+        issueTombstones: tombstoneStore.listAll(),
         runtimeStates: runtimeStore.listAll(),
         loopPreventionWrites: loopPreventionStore.listAll(),
         logEntries: logger.getEntries(),
