@@ -16,7 +16,7 @@ import { formatAttributedBody, formatToduAttribution } from "@/forgejo-comments"
 import { createForgejoSyncLogger } from "@/forgejo-logger";
 import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
 import { createForgejoLoopPreventionStore } from "@/forgejo-loop-prevention";
-import { classifyForgejoSyncError, createForgejoSyncProvider } from "@/forgejo-provider";
+import { classifyForgejoSyncError, createForgejoSyncProvider } from "@/forgejo-legacy-provider";
 import {
   createInitialForgejoRuntimeState,
   createInMemoryForgejoBindingRuntimeStore,

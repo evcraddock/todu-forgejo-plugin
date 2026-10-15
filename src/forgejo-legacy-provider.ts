@@ -1,0 +1,879 @@
+import path from "node:path";
+
+import {
+  SYNC_PROVIDER_API_VERSION_V4,
+  type ExportedTaskInput,
+  type IntegrationBinding,
+  type SyncProviderConfig,
+  type SyncProviderPullResultV4,
+  type SyncProviderPushResult,
+  type SyncProviderRegistration,
+  type SyncProviderV4,
+} from "@todu/core";
+
+import {
+  FORGEJO_PROVIDER_NAME,
+  parseForgejoBinding,
+  type ForgejoRepositoryBinding,
+} from "@/forgejo-binding";
+import {
+  createForgejoBindingStatus,
+  recoverStaleForgejoBindingStatusRunning,
+  updateForgejoBindingStatusBlocked,
+  updateForgejoBindingStatusError,
+  updateForgejoBindingStatusIdle,
+  updateForgejoBindingStatusRunning,
+  type ForgejoBindingStatus,
+} from "@/forgejo-binding-status";
+import {
+  bootstrapForgejoIssuesToTasks,
+  bootstrapTasksToForgejoIssues,
+  type ForgejoBootstrapExportResult,
+  type ForgejoBootstrapImportResult,
+} from "@/forgejo-bootstrap";
+import {
+  createFileForgejoCommentLinkStore,
+  createInMemoryForgejoCommentLinkStore,
+  type ForgejoCommentLink,
+  type ForgejoCommentLinkStore,
+} from "@/forgejo-comment-links";
+import { pullComments, pushComments } from "@/forgejo-comments";
+import {
+  createInMemoryForgejoIssueClient,
+  type ForgejoIssueClient,
+  type ForgejoRepositoryTarget,
+} from "@/forgejo-client";
+import {
+  loadForgejoProviderSettings,
+  resolveForgejoInstanceSettings,
+  type ForgejoProviderSettings,
+} from "@/forgejo-config";
+import { migrateForgejoLegacyStorage } from "@/forgejo-storage";
+import {
+  commitForgejoPullLinks,
+  createForgejoPullCheckpoint,
+  isForgejoPullCheckpoint,
+  replayForgejoPendingPull,
+  sameForgejoPullCheckpoint,
+  stageForgejoPullLinks,
+  type ForgejoPendingPull,
+} from "@/forgejo-pull-checkpoint";
+import { createHttpForgejoIssueClient } from "@/forgejo-http-client";
+import {
+  createFileForgejoItemLinkStore,
+  createInMemoryForgejoItemLinkStore,
+  type ForgejoItemLink,
+  type ForgejoItemLinkStore,
+} from "@/forgejo-links";
+import {
+  createForgejoSyncLogger,
+  type ForgejoSyncLogContext,
+  type ForgejoSyncLogger,
+} from "@/forgejo-logger";
+import {
+  createForgejoLoopPreventionStore,
+  createForgejoWriteKey,
+  type ForgejoLoopPreventionStore,
+  type ForgejoWriteRecord,
+} from "@/forgejo-loop-prevention";
+import {
+  createFileForgejoBindingRuntimeStore,
+  createInitialForgejoRuntimeState,
+  createInMemoryForgejoBindingRuntimeStore,
+  recordForgejoBlocked,
+  recordForgejoFailure,
+  recordForgejoPullSuccess,
+  recordForgejoPushSuccess,
+  shouldForgejoRetry,
+  type ForgejoBindingRuntimeState,
+  type ForgejoBindingRuntimeStore,
+  type ForgejoRetryConfig,
+  type ForgejoRuntimeFailureProgress,
+} from "@/forgejo-runtime";
+import {
+  createFileForgejoIssueTombstoneStore,
+  createInMemoryForgejoIssueTombstoneStore,
+  type ForgejoIssueTombstone,
+  type ForgejoIssueTombstoneStore,
+} from "@/forgejo-tombstones";
+import { FORGEJO_IDENTITY_ERROR_PREFIX, ForgejoIdentityError } from "@/forgejo-identity";
+import { getForgejoHttpStatus } from "@/forgejo-http-error";
+import { VERSION } from "@/version";
+
+export const FORGEJO_PROVIDER_VERSION = VERSION;
+const DEFAULT_LOOP_PREVENTION_MAX_AGE_MS = 10 * 60 * 1000;
+
+export interface ForgejoProviderState {
+  initialized: boolean;
+  settings: ForgejoProviderSettings | null;
+  itemLinks: ForgejoItemLink[];
+  commentLinks: ForgejoCommentLink[];
+  issueTombstones: ForgejoIssueTombstone[];
+  runtimeStates: ForgejoBindingRuntimeState[];
+  loopPreventionWrites: ForgejoWriteRecord[];
+  logEntries: ReturnType<ForgejoSyncLogger["getEntries"]>;
+  lastPullResult: ForgejoBootstrapImportResult | null;
+  lastPushResult: ForgejoBootstrapExportResult | null;
+  bindingStatuses: Map<IntegrationBinding["id"], ForgejoBindingStatus>;
+}
+
+export interface ForgejoSyncProvider extends SyncProviderV4 {
+  push(
+    binding: IntegrationBinding,
+    tasks: ExportedTaskInput[],
+    project: Parameters<SyncProviderV4["push"]>[2]
+  ): Promise<SyncProviderPushResult>;
+  getState(): ForgejoProviderState;
+  /** Internal shared resources; never host task/engine access. */
+  resources(): ForgejoProviderResources;
+}
+
+export interface ForgejoProviderResources {
+  issueClient: ForgejoIssueClient;
+  linkStore: ForgejoItemLinkStore;
+  commentLinkStore: ForgejoCommentLinkStore;
+  runtimeStore: ForgejoBindingRuntimeStore;
+  settings: ForgejoProviderSettings;
+  logger: ForgejoSyncLogger;
+}
+
+export interface CreateForgejoSyncProviderOptions {
+  issueClient?: ForgejoIssueClient;
+  linkStore?: ForgejoItemLinkStore;
+  commentLinkStore?: ForgejoCommentLinkStore;
+  tombstoneStore?: ForgejoIssueTombstoneStore;
+  runtimeStore?: ForgejoBindingRuntimeStore;
+  loopPreventionStore?: ForgejoLoopPreventionStore;
+  logger?: ForgejoSyncLogger;
+  retryConfig?: ForgejoRetryConfig;
+  initialConfig?: SyncProviderConfig | null;
+  loadTaskNotes?: (
+    taskId: ExportedTaskInput["localTaskId"]
+  ) => Promise<Array<{ id: string; tags: string[] }>>;
+}
+
+export function createForgejoRepositoryTarget(
+  parsedBinding: ForgejoRepositoryBinding,
+  settings: ForgejoProviderSettings
+): ForgejoRepositoryTarget {
+  const instance = resolveForgejoInstanceSettings(settings, parsedBinding.binding);
+  return {
+    owner: parsedBinding.owner,
+    repo: parsedBinding.repo,
+    baseUrl: instance.baseUrl,
+    apiBaseUrl: instance.apiBaseUrl,
+    token: instance.token,
+    authType: instance.authType,
+  };
+}
+
+export function createForgejoSyncProvider(
+  options: CreateForgejoSyncProviderOptions = {}
+): ForgejoSyncProvider {
+  let settings = options.initialConfig ? loadForgejoProviderSettings(options.initialConfig) : null;
+  let lastPullResult: ForgejoBootstrapImportResult | null = null;
+  let lastPushResult: ForgejoBootstrapExportResult | null = null;
+  let issueClient: ForgejoIssueClient = options.issueClient ?? createInMemoryForgejoIssueClient();
+  let linkStore = options.linkStore ?? createInMemoryForgejoItemLinkStore();
+  let commentLinkStore = options.commentLinkStore ?? createInMemoryForgejoCommentLinkStore();
+  let tombstoneStore = options.tombstoneStore ?? createInMemoryForgejoIssueTombstoneStore();
+  let runtimeStore = options.runtimeStore ?? createInMemoryForgejoBindingRuntimeStore();
+  let loopPreventionStore = options.loopPreventionStore ?? createForgejoLoopPreventionStore();
+  const logger = options.logger ?? createForgejoSyncLogger();
+  const retryConfig = options.retryConfig;
+  const bindingStatuses = new Map<IntegrationBinding["id"], ForgejoBindingStatus>();
+  const inFlightPulls = new Map<
+    IntegrationBinding["id"],
+    { scope: string; promise: Promise<SyncProviderPullResultV4> }
+  >();
+
+  const getOrCreateBindingStatus = (bindingId: IntegrationBinding["id"]): ForgejoBindingStatus => {
+    let status = bindingStatuses.get(bindingId);
+    if (!status) {
+      status = createForgejoBindingStatus(bindingId);
+      bindingStatuses.set(bindingId, status);
+    }
+
+    return status;
+  };
+
+  const getOrCreateRuntimeState = (
+    bindingId: IntegrationBinding["id"]
+  ): ForgejoBindingRuntimeState => {
+    let state = runtimeStore.get(bindingId);
+    if (!state) {
+      state = createInitialForgejoRuntimeState(bindingId);
+      runtimeStore.save(state);
+    }
+
+    return state;
+  };
+
+  const createLogContext = (
+    binding: IntegrationBinding,
+    parsedBinding: ForgejoRepositoryBinding,
+    direction: "pull" | "push"
+  ): ForgejoSyncLogContext => ({
+    bindingId: binding.id,
+    projectId: String(binding.projectId),
+    repo: `${parsedBinding.owner}/${parsedBinding.repo}`,
+    direction,
+  });
+
+  const requireInitializedSettings = (): ForgejoProviderSettings => {
+    if (!settings) {
+      throw new Error(
+        "Forgejo sync provider is not initialized; call initialize() before sync operations"
+      );
+    }
+
+    return settings;
+  };
+
+  const validateBinding = (
+    binding: Parameters<SyncProviderV4["pull"]>[0]
+  ): ForgejoRepositoryBinding => {
+    requireInitializedSettings();
+    return parseForgejoBinding(binding);
+  };
+
+  const retainBlockedFailure = (state: ForgejoBindingRuntimeState): void => {
+    if (state.lastError && !classifyForgejoSyncError(state.lastError).retryable) {
+      bindingStatuses.set(
+        state.bindingId,
+        updateForgejoBindingStatusBlocked(
+          getOrCreateBindingStatus(state.bindingId),
+          state.lastError
+        )
+      );
+      throw new Error(state.lastError);
+    }
+  };
+
+  const recoverStaleRunningStatuses = (): void => {
+    for (const [bindingId, status] of bindingStatuses.entries()) {
+      const recovered = recoverStaleForgejoBindingStatusRunning(status);
+      if (recovered !== status) {
+        bindingStatuses.set(bindingId, recovered);
+        logger.warn("cleared stale Forgejo binding running state", {
+          bindingId,
+          projectId: "unknown",
+          repo: "unknown",
+          direction: "pull",
+        });
+      }
+    }
+  };
+
+  return {
+    name: FORGEJO_PROVIDER_NAME,
+    version: FORGEJO_PROVIDER_VERSION,
+    async initialize(config: SyncProviderConfig): Promise<void> {
+      recoverStaleRunningStatuses();
+      settings = loadForgejoProviderSettings(config);
+      if (!options.issueClient) {
+        issueClient = createHttpForgejoIssueClient(settings.token, {
+          authType: settings.authType,
+        });
+      }
+      if (settings.storageDir) {
+        migrateForgejoLegacyStorage(settings);
+      }
+      if (!options.linkStore && settings.storageDir) {
+        linkStore = createFileForgejoItemLinkStore(
+          path.join(settings.storageDir, "item-links.json")
+        );
+      }
+      if (!options.commentLinkStore && settings.storageDir) {
+        commentLinkStore = createFileForgejoCommentLinkStore(
+          path.join(settings.storageDir, "comment-links.json")
+        );
+      }
+      if (!options.tombstoneStore && settings.storageDir) {
+        tombstoneStore = createFileForgejoIssueTombstoneStore(
+          path.join(settings.storageDir, "issue-tombstones.json")
+        );
+      }
+      if (!options.runtimeStore && settings.storageDir) {
+        runtimeStore = createFileForgejoBindingRuntimeStore(
+          path.join(settings.storageDir, "runtime-state.json")
+        );
+      }
+      if (!options.loopPreventionStore) {
+        loopPreventionStore = createForgejoLoopPreventionStore();
+      }
+    },
+    async shutdown(): Promise<void> {
+      recoverStaleRunningStatuses();
+      settings = null;
+      lastPullResult = null;
+      lastPushResult = null;
+      if (!options.issueClient) {
+        issueClient = createInMemoryForgejoIssueClient();
+      }
+      if (!options.linkStore) {
+        linkStore = createInMemoryForgejoItemLinkStore();
+      }
+      if (!options.commentLinkStore) {
+        commentLinkStore = createInMemoryForgejoCommentLinkStore();
+      }
+      if (!options.tombstoneStore) {
+        tombstoneStore = createInMemoryForgejoIssueTombstoneStore();
+      }
+      if (!options.runtimeStore) {
+        runtimeStore = createInMemoryForgejoBindingRuntimeStore();
+      }
+      if (!options.loopPreventionStore) {
+        loopPreventionStore = createForgejoLoopPreventionStore();
+      }
+    },
+    async pull(binding, project): Promise<SyncProviderPullResultV4> {
+      const parsedBinding = validateBinding(binding);
+      const currentSettings = requireInitializedSettings();
+      const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
+      const logContext = createLogContext(binding, parsedBinding, "pull");
+      const scope = checkpointScope(binding, target, project.id);
+
+      if (binding.strategy === "none" || binding.strategy === "push") {
+        lastPullResult = { tasks: [], createdLinks: [], touchedIssueNumbers: [] };
+        logger.debug("skipping pull due to binding strategy", logContext);
+        return { tasks: [], checkpoint: null };
+      }
+
+      const activePull = inFlightPulls.get(binding.id);
+      if (activePull) {
+        if (activePull.scope !== scope)
+          throw new Error(
+            "Forgejo in-flight pull checkpoint does not match the current binding target/project"
+          );
+        return structuredClone(await activePull.promise);
+      }
+      const runtimeState = getOrCreateRuntimeState(binding.id);
+      if (!shouldForgejoRetry(runtimeState)) {
+        retainBlockedFailure(runtimeState);
+        logger.info("skipping pull: retry backoff not elapsed", logContext);
+        return { tasks: [], checkpoint: null };
+      }
+
+      if (runtimeState.pendingPull) {
+        if (runtimeState.pendingPull.checkpoint.scope !== scope)
+          throw new Error(
+            "Forgejo pending pull checkpoint does not match the current binding target/project"
+          );
+        logger.info("replaying unacknowledged pull", logContext);
+        return replayForgejoPendingPull(runtimeState.pendingPull);
+      }
+      bindingStatuses.set(
+        binding.id,
+        updateForgejoBindingStatusRunning(getOrCreateBindingStatus(binding.id))
+      );
+      logger.info("pull started", logContext);
+      const read = (async () => {
+        let failureProgress: ForgejoRuntimeFailureProgress | undefined;
+        try {
+          const stagedLinks = stageForgejoPullLinks(binding.id, linkStore, commentLinkStore);
+          // Replay the start second even when the server uses exclusive, second-precision
+          // `since` filtering. Never checkpoint past changes made during issue discovery.
+          const pullCursor = new Date(Math.floor(Date.now() / 1000) * 1000 - 1000).toISOString();
+          loopPreventionStore.clearExpired(DEFAULT_LOOP_PREVENTION_MAX_AGE_MS);
+          const pendingCommentIssueNumbers = runtimeState.pendingCommentIssueNumbers ?? [];
+
+          const issuePullResult = await bootstrapForgejoIssuesToTasks({
+            binding,
+            baseUrl: target.baseUrl,
+            apiBaseUrl: target.apiBaseUrl,
+            token: target.token,
+            authType: target.authType,
+            owner: target.owner,
+            repo: target.repo,
+            issueClient,
+            linkStore: stagedLinks.itemStore,
+            since: runtimeState.issuePullCursor ?? undefined,
+            importClosedOnBootstrap: getImportClosedOnBootstrap(binding),
+            previouslyDiscoveredIssueNumbers: pendingCommentIssueNumbers,
+          });
+          lastPullResult = issuePullResult;
+
+          const commentSince = runtimeState.commentPullCursor ?? undefined;
+          // Comment discovery is independent of issue updates, even before the first
+          // successful comment pull (for example after a partial pull or migration).
+          const linkedCommentIssueNumbers = stagedLinks.itemStore
+            .list(binding.id)
+            .map((itemLink) => itemLink.issueNumber);
+          const commentIssueNumbers = [
+            ...new Set([
+              ...pendingCommentIssueNumbers,
+              ...issuePullResult.touchedIssueNumbers,
+              ...linkedCommentIssueNumbers,
+            ]),
+          ];
+          if (commentIssueNumbers.length > 0) {
+            failureProgress = {
+              phase: "pull:comments",
+              cursor: pullCursor,
+              progressAt: new Date().toISOString(),
+              pendingCommentIssueNumbers: commentIssueNumbers,
+            };
+          }
+
+          const pullCommentsResult =
+            commentIssueNumbers.length === 0
+              ? { comments: [], createdLinks: [] }
+              : await pullComments({
+                  binding,
+                  issueClient,
+                  target,
+                  itemLinkStore: stagedLinks.itemStore,
+                  commentLinkStore: stagedLinks.commentStore,
+                  issueNumbers: commentIssueNumbers,
+                  since: commentSince,
+                  onIssueError: ({ itemLink, error }) => {
+                    const classification = classifyForgejoSyncError(error);
+                    if (classification.kind !== "not-found") {
+                      return "throw";
+                    }
+
+                    // A 404 can mean inaccessible, not deleted. Do not acknowledge
+                    // removal of identity/comment links and then recreate on push.
+                    throw new ForgejoIdentityError(
+                      `comments for linked issue ${parsedBinding.owner}/${parsedBinding.repo}#${itemLink.issueNumber} are unavailable; existing task/comment links retained`,
+                      { cause: error }
+                    );
+                  },
+                });
+
+          const pendingPull: ForgejoPendingPull = {
+            checkpoint: createForgejoPullCheckpoint(scope),
+            issueCursor: pullCursor,
+            commentCursor: pullCursor,
+            result: { tasks: issuePullResult.tasks, comments: pullCommentsResult.comments },
+            ...stagedLinks.changes(),
+          };
+          runtimeStore.save({
+            ...getOrCreateRuntimeState(binding.id),
+            pendingPull,
+            lastAttemptAt: new Date().toISOString(),
+          });
+
+          logger.info("pull completed", {
+            ...logContext,
+            itemId: `${issuePullResult.tasks.length} tasks, ${pullCommentsResult.comments.length} comments`,
+          });
+
+          return replayForgejoPendingPull(pendingPull);
+        } catch (error) {
+          const classification = classifyForgejoSyncError(error);
+          applyFailureState({
+            bindingId: binding.id,
+            runtimeState,
+            classification,
+            logContext,
+            direction: "pull",
+            progress: failureProgress ?? { phase: "pull:issues" },
+          });
+          throw error;
+        }
+      })();
+      inFlightPulls.set(binding.id, { scope, promise: read });
+      try {
+        return structuredClone(await read);
+      } finally {
+        inFlightPulls.delete(binding.id);
+      }
+    },
+    async acknowledgePull(binding, checkpoint, project): Promise<void> {
+      const parsedBinding = validateBinding(binding);
+      const target = createForgejoRepositoryTarget(parsedBinding, requireInitializedSettings());
+      const scope = checkpointScope(binding, target, project.id);
+      // Skipped cycles carry a null token; they cannot acknowledge pending work.
+      if (checkpoint === null) return;
+      if (!isForgejoPullCheckpoint(checkpoint) || checkpoint.scope !== scope)
+        throw new Error("Invalid Forgejo pull checkpoint for this binding target/project");
+      const state = getOrCreateRuntimeState(binding.id);
+      if (!state.pendingPull) {
+        if (
+          state.lastAcknowledgedPull &&
+          sameForgejoPullCheckpoint(state.lastAcknowledgedPull, checkpoint)
+        )
+          return;
+        throw new Error("Unknown or stale Forgejo pull checkpoint");
+      }
+      if (!sameForgejoPullCheckpoint(state.pendingPull.checkpoint, checkpoint))
+        throw new Error("Unknown or stale Forgejo pull checkpoint");
+      const logContext = createLogContext(binding, parsedBinding, "pull");
+      try {
+        commitForgejoPullLinks(state.pendingPull, linkStore, commentLinkStore);
+        runtimeStore.save({
+          ...recordForgejoPullSuccess(state, state.pendingPull.issueCursor),
+          commentPullCursor: state.pendingPull.commentCursor,
+          pendingPull: null,
+          lastAcknowledgedPull: state.pendingPull.checkpoint,
+        });
+        bindingStatuses.set(
+          binding.id,
+          updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id))
+        );
+        logger.info("pull acknowledged", logContext);
+      } catch (error) {
+        applyFailureState({
+          bindingId: binding.id,
+          runtimeState: state,
+          classification: classifyForgejoSyncError(error),
+          logContext,
+          direction: "pull",
+          progress: { phase: "pull:acknowledgment", cursor: state.pendingPull.issueCursor },
+        });
+        throw error;
+      }
+    },
+    async push(binding, tasks: ExportedTaskInput[], _project): Promise<SyncProviderPushResult> {
+      const parsedBinding = validateBinding(binding);
+      const currentSettings = requireInitializedSettings();
+      const target = createForgejoRepositoryTarget(parsedBinding, currentSettings);
+      const logContext = createLogContext(binding, parsedBinding, "push");
+
+      if (binding.strategy === "none" || binding.strategy === "pull") {
+        lastPushResult = {
+          createdIssues: [],
+          updatedIssues: [],
+          closedIssues: [],
+          createdLinks: [],
+          taskUpdates: [],
+          taskActions: [],
+          hydratedLinkedTasks: 0,
+          issueReadCount: 0,
+          skippedLinkedTasks: 0,
+          skippedIssueCreates: 0,
+          unavailableCancelledTaskIds: [],
+        };
+        logger.debug("skipping push due to binding strategy", logContext);
+        return { commentLinks: [], taskLinks: [] };
+      }
+
+      const runtimeState = getOrCreateRuntimeState(binding.id);
+      if (!shouldForgejoRetry(runtimeState)) {
+        retainBlockedFailure(runtimeState);
+        logger.info("skipping push: retry backoff not elapsed", logContext);
+        return { commentLinks: [], taskLinks: [] };
+      }
+
+      bindingStatuses.set(
+        binding.id,
+        updateForgejoBindingStatusRunning(getOrCreateBindingStatus(binding.id))
+      );
+      logger.info("push started", logContext);
+
+      let failureProgress: ForgejoRuntimeFailureProgress | undefined;
+      try {
+        loopPreventionStore.clearExpired(DEFAULT_LOOP_PREVENTION_MAX_AGE_MS);
+        failureProgress = {
+          phase: "push:issues",
+          progressAt: new Date().toISOString(),
+        };
+
+        lastPushResult = await bootstrapTasksToForgejoIssues({
+          binding,
+          baseUrl: target.baseUrl,
+          apiBaseUrl: target.apiBaseUrl,
+          token: target.token,
+          authType: target.authType,
+          owner: target.owner,
+          repo: target.repo,
+          tasks,
+          issueClient,
+          linkStore,
+          commentLinkStore,
+          shouldSkipIssueUpdate: (issue) => {
+            const issueTimestamp = issue.updatedAt ?? issue.createdAt;
+            if (!issueTimestamp) {
+              return false;
+            }
+
+            return loopPreventionStore.isOwnWrite(
+              createForgejoWriteKey("issue", String(binding.id), String(issue.number)),
+              issueTimestamp
+            );
+          },
+        });
+
+        for (const taskAction of lastPushResult.taskActions) {
+          const logTaskActionContext = {
+            ...logContext,
+            entityType: "task" as const,
+            itemId: String(taskAction.taskId),
+            itemTitle: taskAction.title,
+            action: taskAction.action,
+            ...(taskAction.issueNumber ? { issueNumber: taskAction.issueNumber } : {}),
+            ...(taskAction.reason ? { reason: taskAction.reason } : {}),
+          };
+          const shouldWarn =
+            taskAction.action === "skip" &&
+            taskAction.reason !== undefined &&
+            /(remote issue create conflict|matching metadata)/i.test(taskAction.reason);
+          if (shouldWarn) {
+            logger.warn(`push task ${taskAction.action}`, logTaskActionContext);
+          } else {
+            logger.info(`push task ${taskAction.action}`, logTaskActionContext);
+          }
+        }
+
+        for (const createdIssue of lastPushResult.createdIssues) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("issue", String(binding.id), String(createdIssue.number)),
+            createdIssue.updatedAt ?? new Date().toISOString()
+          );
+        }
+
+        for (const updatedIssue of lastPushResult.updatedIssues) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("issue", String(binding.id), String(updatedIssue.number)),
+            updatedIssue.updatedAt ?? new Date().toISOString()
+          );
+        }
+
+        for (const closedIssue of lastPushResult.closedIssues) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("issue", String(binding.id), String(closedIssue.number)),
+            closedIssue.updatedAt ?? new Date().toISOString()
+          );
+        }
+
+        failureProgress = {
+          phase: "push:comments",
+          progressAt: new Date().toISOString(),
+        };
+
+        const unavailableCancelledTaskIds = new Set(lastPushResult.unavailableCancelledTaskIds);
+        const pushCommentsResult = await pushComments({
+          binding,
+          issueClient,
+          target,
+          tasks: tasks.filter((task) => !unavailableCancelledTaskIds.has(task.localTaskId)),
+          itemLinkStore: linkStore,
+          commentLinkStore,
+          loadTaskNotes: options.loadTaskNotes,
+          onStaleLink: ({ itemLink, commentLink }) => {
+            logger.warn("removing stale comment link for missing local note", {
+              ...logContext,
+              entityType: "comment",
+              itemId: `${itemLink.issueNumber}:${commentLink.forgejoCommentId}`,
+            });
+          },
+        });
+
+        for (const createdComment of pushCommentsResult.createdComments) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("comment", String(binding.id), String(createdComment.id)),
+            createdComment.updatedAt ?? createdComment.createdAt
+          );
+        }
+
+        for (const updatedComment of pushCommentsResult.updatedComments) {
+          loopPreventionStore.recordWrite(
+            createForgejoWriteKey("comment", String(binding.id), String(updatedComment.id)),
+            updatedComment.updatedAt ?? updatedComment.createdAt
+          );
+        }
+
+        // API v4 has no host push acknowledgment. This records remote work only;
+        // shared integration status owns the host's end-to-end application result.
+        const successState = recordForgejoPushSuccess(getOrCreateRuntimeState(binding.id));
+        runtimeStore.save(successState);
+        let status = updateForgejoBindingStatusIdle(getOrCreateBindingStatus(binding.id));
+        if (successState.lastError) {
+          status = classifyForgejoSyncError(successState.lastError).retryable
+            ? updateForgejoBindingStatusError(status, successState.lastError)
+            : updateForgejoBindingStatusBlocked(status, successState.lastError);
+        }
+        bindingStatuses.set(binding.id, status);
+
+        logger.info("push completed", {
+          ...logContext,
+          itemId:
+            `${lastPushResult.createdIssues.length} created, ` +
+            `${lastPushResult.updatedIssues.length} updated, ` +
+            `${lastPushResult.closedIssues.length} closed, ` +
+            `${lastPushResult.skippedLinkedTasks} skipped, ` +
+            `${lastPushResult.skippedIssueCreates} create skips, ` +
+            `${lastPushResult.issueReadCount} issue reads, ` +
+            `${pushCommentsResult.createdComments.length} comment creates, ` +
+            `${pushCommentsResult.updatedComments.length} comment updates`,
+        });
+
+        return {
+          commentLinks: pushCommentsResult.commentLinks,
+          taskLinks: lastPushResult.taskUpdates.map((update) => ({
+            localTaskId: update.taskId as never,
+            externalId: update.externalId,
+            sourceUrl: update.sourceUrl,
+          })),
+        };
+      } catch (error) {
+        const classification = classifyForgejoSyncError(error);
+        applyFailureState({
+          bindingId: binding.id,
+          runtimeState,
+          classification,
+          logContext,
+          direction: "push",
+          progress: failureProgress,
+        });
+        throw error;
+      }
+    },
+    resources(): ForgejoProviderResources {
+      return {
+        issueClient,
+        linkStore,
+        commentLinkStore,
+        runtimeStore,
+        settings: requireInitializedSettings(),
+        logger,
+      };
+    },
+    getState(): ForgejoProviderState {
+      return {
+        initialized: settings !== null,
+        settings,
+        itemLinks: linkStore.listAll(),
+        commentLinks: commentLinkStore.listAll(),
+        issueTombstones: tombstoneStore.listAll(),
+        runtimeStates: runtimeStore.listAll(),
+        loopPreventionWrites: loopPreventionStore.listAll(),
+        logEntries: logger.getEntries(),
+        lastPullResult,
+        lastPushResult,
+        bindingStatuses: new Map(bindingStatuses),
+      };
+    },
+  };
+
+  function applyFailureState(input: {
+    bindingId: IntegrationBinding["id"];
+    runtimeState: ForgejoBindingRuntimeState;
+    classification: ForgejoSyncErrorClassification;
+    logContext: ForgejoSyncLogContext;
+    direction: "pull" | "push";
+    progress?: ForgejoRuntimeFailureProgress;
+  }): void {
+    const { classification, bindingId, logContext } = input;
+    const runtimeState = runtimeStore.get(bindingId) ?? input.runtimeState;
+    const status = getOrCreateBindingStatus(bindingId);
+
+    if (classification.retryable) {
+      runtimeStore.save(
+        recordForgejoFailure(
+          runtimeState,
+          classification.summary,
+          retryConfig,
+          new Date(),
+          input.progress
+        )
+      );
+      bindingStatuses.set(
+        bindingId,
+        updateForgejoBindingStatusError(status, classification.summary)
+      );
+      logger.error(`${input.direction} failed`, logContext, classification.summary);
+      return;
+    }
+
+    runtimeStore.save(
+      recordForgejoBlocked(
+        runtimeState,
+        classification.summary,
+        undefined,
+        new Date(),
+        input.progress
+      )
+    );
+    bindingStatuses.set(
+      bindingId,
+      updateForgejoBindingStatusBlocked(status, classification.summary)
+    );
+    logger.warn(`${input.direction} blocked`, logContext);
+  }
+}
+
+export function checkpointScope(
+  binding: IntegrationBinding,
+  target: ForgejoRepositoryTarget,
+  projectId: IntegrationBinding["projectId"]
+): string {
+  if (projectId !== binding.projectId)
+    throw new Error("Forgejo pull checkpoint project does not match the binding");
+  return JSON.stringify([
+    binding.id,
+    binding.provider,
+    projectId,
+    binding.targetKind,
+    binding.targetRef,
+    target.baseUrl,
+    target.apiBaseUrl,
+    getImportClosedOnBootstrap(binding),
+  ]);
+}
+
+export const forgejoProvider = createForgejoSyncProvider();
+
+export const syncProvider: SyncProviderRegistration = {
+  manifest: {
+    name: FORGEJO_PROVIDER_NAME,
+    version: FORGEJO_PROVIDER_VERSION,
+    apiVersion: SYNC_PROVIDER_API_VERSION_V4,
+  },
+  provider: forgejoProvider,
+};
+
+export interface ForgejoSyncErrorClassification {
+  kind:
+    | "identity"
+    | "auth"
+    | "permission"
+    | "not-found"
+    | "rate-limit"
+    | "server"
+    | "transport"
+    | "unknown";
+  retryable: boolean;
+  summary: string;
+}
+
+export function getImportClosedOnBootstrap(binding: IntegrationBinding): boolean {
+  return binding.options?.importClosedOnBootstrap === true;
+}
+
+export function classifyForgejoSyncError(error: unknown): ForgejoSyncErrorClassification {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (message.startsWith(FORGEJO_IDENTITY_ERROR_PREFIX)) {
+    return { kind: "identity", retryable: false, summary: message };
+  }
+
+  const status = getForgejoHttpStatus(error);
+  if (status === 401) {
+    return { kind: "auth", retryable: false, summary: `authentication failed: ${message}` };
+  }
+
+  if (status === 403) {
+    return { kind: "permission", retryable: false, summary: `permission denied: ${message}` };
+  }
+
+  if (status === 404) {
+    return { kind: "not-found", retryable: false, summary: `resource not found: ${message}` };
+  }
+
+  if (status === 429 || /rate limit/i.test(message)) {
+    return { kind: "rate-limit", retryable: true, summary: `rate limited: ${message}` };
+  }
+
+  if (status !== null && status >= 500 && status < 600) {
+    return { kind: "server", retryable: true, summary: `server error: ${message}` };
+  }
+
+  if (/(network|fetch failed|timed out|timeout|econn|socket|enotfound|eai_again)/i.test(message)) {
+    return { kind: "transport", retryable: true, summary: `transport error: ${message}` };
+  }
+
+  return { kind: "unknown", retryable: true, summary: message };
+}

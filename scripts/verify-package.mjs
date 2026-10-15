@@ -17,6 +17,8 @@ const requiredFiles = [
   "CHANGELOG.md",
   "dist/index.js",
   "dist/index.d.ts",
+  "dist/forgejo-v4-drain.js",
+  "dist/forgejo-v4-drain.d.ts",
   "dist/version.d.ts",
   "docs/release.md",
   "docs/FORGEJO-STORAGE-MIGRATION.md",
@@ -111,8 +113,11 @@ assert.equal(syncProvider.manifest.name, "forgejo");
 assert.equal(syncProvider.manifest.version, ${JSON.stringify(metadata.version)});
 assert.equal(syncProvider.provider.version, ${JSON.stringify(metadata.version)});
 assert.equal(FORGEJO_PROVIDER_VERSION, ${JSON.stringify(metadata.version)});
-assert.equal(syncProvider.manifest.apiVersion, 4);
-for (const method of ["initialize", "shutdown", "pull", "push", "acknowledgePull"]) {
+assert.equal(syncProvider.manifest.apiVersion, 7);
+const { syncProvider: drain } = await import(${JSON.stringify(`${metadata.name}/v4-drain`)});
+assert.equal(drain.manifest.apiVersion, 4);
+assert.equal(drain.manifest.name, "forgejo");
+for (const method of ["initialize", "shutdown", "pull", "push", "acknowledgePull", "recoveryState"]) {
   assert.equal(typeof syncProvider.provider[method], "function");
 }
 `
@@ -128,6 +133,9 @@ for (const method of ["initialize", "shutdown", "pull", "push", "acknowledgePull
       path.join(consumer, "consumer.mts"),
       `
 import { syncProvider, createForgejoSyncProvider, type ForgejoSyncProvider } from ${JSON.stringify(metadata.name)};
+import { syncProvider as drain } from ${JSON.stringify(`${metadata.name}/v4-drain`)};
+const drainVersion: 4 = drain.manifest.apiVersion;
+void drainVersion;
 const provider: ForgejoSyncProvider = createForgejoSyncProvider();
 const version: string = syncProvider.manifest.version;
 void provider;
@@ -161,7 +169,7 @@ void version;
             version: packed.version,
             filename: packed.filename,
             integrity,
-            apiVersion: 4,
+            apiVersion: 7,
             files: packed.files.map((entry) => entry.path),
           },
           null,

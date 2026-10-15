@@ -9,6 +9,6 @@ describe("public exports", () => {
     expect(FORGEJO_PROVIDER_VERSION).toBe(version);
     expect(syncProvider.manifest.version).toBe(version);
     expect(syncProvider.provider.version).toBe(version);
-    expect(syncProvider.manifest.apiVersion).toBe(4);
+    expect(syncProvider.manifest.apiVersion).toBe(7);
   });
 });

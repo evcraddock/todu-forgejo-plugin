@@ -7,7 +7,7 @@ import { createDaemonLogger, createSyncPluginWorkerRuntime } from "@todu/daemon"
 import { createTodu, type ToduWithInternalTools } from "@todu/engine";
 
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
-import { createForgejoSyncProvider } from "@/forgejo-provider";
+import { createForgejoSyncProvider } from "@/forgejo-legacy-provider";
 
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(JSON.stringify(result.error));

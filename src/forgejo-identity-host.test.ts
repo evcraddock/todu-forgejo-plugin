@@ -10,7 +10,7 @@ import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
 import { createFileForgejoCommentLinkStore } from "@/forgejo-comment-links";
 import { ForgejoHttpError } from "@/forgejo-http-error";
 import { createFileForgejoItemLinkStore } from "@/forgejo-links";
-import { createForgejoSyncProvider } from "@/forgejo-provider";
+import { createForgejoSyncProvider } from "@/forgejo-legacy-provider";
 import { createFileForgejoBindingRuntimeStore } from "@/forgejo-runtime";
 
 function value<T>(result: Result<T>): T {

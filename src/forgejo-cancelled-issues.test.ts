@@ -13,7 +13,7 @@ import { createInMemoryForgejoCommentLinkStore } from "@/forgejo-comment-links";
 import { ForgejoHttpError } from "@/forgejo-http-error";
 import { createImportedTaskId } from "@/forgejo-ids";
 import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
-import { createForgejoSyncProvider } from "@/forgejo-provider";
+import { createForgejoSyncProvider } from "@/forgejo-legacy-provider";
 import { createInMemoryForgejoBindingRuntimeStore } from "@/forgejo-runtime";
 
 const binding: IntegrationBinding = {

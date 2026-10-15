@@ -135,6 +135,12 @@ export {
   type ForgejoSyncErrorClassification,
   type ForgejoSyncProvider,
 } from "@/forgejo-provider";
+export { createForgejoV4DrainProvider } from "@/forgejo-v4-drain";
+export type {
+  ForgejoFieldSyncState,
+  ForgejoV7Pending,
+  ForgejoV7Checkpoint,
+} from "@/forgejo-v7-ledger";
 export type { ForgejoPendingPull, ForgejoPullCheckpoint } from "@/forgejo-pull-checkpoint";
 export {
   createFileForgejoIssueTombstoneStore,

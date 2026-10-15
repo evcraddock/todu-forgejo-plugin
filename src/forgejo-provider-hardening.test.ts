@@ -12,7 +12,7 @@ import { FORGEJO_PROVIDER_NAME, FORGEJO_REPOSITORY_TARGET_KIND } from "@/forgejo
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
 import { createForgejoSyncLogger } from "@/forgejo-logger";
 import { createLinkFromTask, createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
-import { createForgejoSyncProvider } from "@/forgejo-provider";
+import { createForgejoSyncProvider } from "@/forgejo-legacy-provider";
 import { createInMemoryForgejoBindingRuntimeStore } from "@/forgejo-runtime";
 
 function createBinding(overrides: Partial<IntegrationBinding> = {}): IntegrationBinding {

@@ -14,6 +14,8 @@ const required = [
   "CHANGELOG.md",
   "dist/index.js",
   "dist/index.d.ts",
+  "dist/forgejo-v4-drain.js",
+  "dist/forgejo-v4-drain.d.ts",
   "dist/version.d.ts",
   "docs/release.md",
   "docs/FORGEJO-STORAGE-MIGRATION.md",

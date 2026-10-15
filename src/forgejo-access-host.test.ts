@@ -9,7 +9,7 @@ import { createTodu, type ToduWithInternalTools } from "@todu/engine";
 import { createFileForgejoCommentLinkStore } from "@/forgejo-comment-links";
 import { createHttpForgejoIssueClient } from "@/forgejo-http-client";
 import { createFileForgejoItemLinkStore } from "@/forgejo-links";
-import { createForgejoSyncProvider } from "@/forgejo-provider";
+import { createForgejoSyncProvider } from "@/forgejo-legacy-provider";
 
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(JSON.stringify(result.error));

@@ -6,11 +6,11 @@ Implemented features include issue/task bootstrap, title and markdown body sync,
 
 ## Compatibility and limitations
 
-- The plugin declares **sync-provider API v4**. Use a Todu daemon supporting v4 acknowledgment; this is independent of the npm package version.
+- This source declares **sync-provider API v7**. Minimum supported libraries are `@todu/core` 0.28.0, `@todu/daemon` 0.28.1, and `@todu/engine` 0.24.5. Older hosts fail registration rather than silently downgrading; the provider API is independent of the npm plugin version. This source change is not a new published Forgejo release.
 - The runtime requires Node.js 20 or newer; source builds/versioning use Node.js 24.
-- Issue fields still use whole-record timestamps/replacement; concurrent changes can overwrite unrelated fields. Optional field snapshots are storage foundations, not API v5 reconciliation.
-- An absent Todu description does not clear the existing Forgejo body. Empty/partially mapped assignee exports are not yet complete safe set replacement.
-- Missing/inaccessible linked issues block sync with an explicit identity-repair diagnostic, except a missing issue for a currently cancelled task during push is skipped; original task/comment links are retained and no replacement issue is created. This does not automatically clean up duplicates produced by older versions. Metadata equality can still relink tasks without an explicit identity. Comment conflicts remain origin-sensitive; comment deletion does not propagate.
+- Content, workflow, classification, and assignment reconcile independently from verified mirrored snapshots. Unknown history initializes automatically only on equality; disagreements remain unresolved rather than choosing a winner or overwriting either side.
+- Pending content approval and incomplete/unauthorized actor mappings defer the affected group. V7 does not automatically create/authorize missing assignees. Complete known empty descriptions/assignments are explicit values; deferred groups never become empty replacements. Field-specific repair/enhancement tasks remain separate.
+- Missing/inaccessible linked issues block sync with an explicit identity-repair diagnostic, except a missing issue for a currently cancelled task during push is skipped; original task/comment links are retained and no replacement issue is created. This does not automatically clean up duplicates produced by older versions. V7 links by explicit identity, not metadata equality; an ambiguous outbound create is quarantined for explicit identity repair instead of retried blindly. Comment conflicts remain origin-sensitive; comment deletion does not propagate.
 
 See [CHANGELOG.md](CHANGELOG.md) for capabilities and remaining limitations. Start new bindings in `pull` mode and inspect the imports before enabling bidirectional writes.
 
@@ -100,7 +100,7 @@ After a separately approved daemon restart, verify with `todu plugin list` and `
 ## Upgrades
 
 1. Review the new version's changelog, host compatibility, and [storage migration guide](docs/FORGEJO-STORAGE-MIGRATION.md).
-2. Back up Todu data and plugin state. Preserve `pendingPull`, links, snapshots, and checkpoint archives; never clear them merely to force sync.
+2. Back up Todu data and all plugin state. Preserve legacy `pendingPull`, v7 `fieldSync` work, `v4-drain.json`, links, snapshots, and checkpoint archives. Follow the [bounded v4 drain procedure](docs/FORGEJO-STORAGE-MIGRATION.md#api-v7-adoption-and-bounded-v4-drain) before cutover; never clear or relabel pending work merely to force sync.
 3. With deployment approval, install an exact published version or build the reviewed source commit. When moving from a source path to npm, remove only the exact old configured entry so two copies do not declare the same provider.
 4. Restart the daemon with separate approval, verify the reported plugin version and binding status, and follow the [smoke-test guide](docs/SMOKE-TEST.md).
 
@@ -112,11 +112,11 @@ A `Forgejo requires explicit identity repair` error means a linked issue/comment
 
 During push, a currently cancelled task (`canceled` in the core API) with an unavailable issue is an acceptable no-op. A missing issue read or issue-update HTTP 404 skips that task and its comment push, preserving its references, notes, approvals/provenance, item/comment links, and snapshots while allowing other tasks to sync. Available linked issues still receive cancellation normally. Authentication/permission failures, rate limits, server errors, non-cancelled tasks, and conflicting identities remain errors. Skips are logged and re-evaluated from the current exported status each push; no cancellation or deletion tombstone is inferred or cached.
 
-API v4 pull receives the project but not current local task statuses. Missing linked comment endpoints therefore remain blocking during pull, even after a cancelled push; a prior skip cannot safely prove that a task is still cancelled. Resolving that pull-side case needs current host task-state support, not a blanket 404 exception. This push fix handles cancelled tasks with external references but no saved plugin links, including the observed dotfiles blocker; it does not promise recovery of every cancelled linked task in a bidirectional or pull-only binding. Existing binding backoff is retained until the next eligible cycle; a successful push cannot clear an unresolved pull failure.
+Missing linked comment endpoints remain blocking during pull, even after a cancelled push; a prior skip cannot safely prove current cancellation. V7 now supplies scoped current-task context, but this adapter does not yet submit cancellation-based exclusions. The deletion follow-up must explicitly adopt fresh scoped exclusion receipts and coordinate its operator confirmation/tombstone flow; blanket 404 suppression remains forbidden. This push fix handles cancelled tasks with external references but no saved plugin links, including the observed dotfiles blocker; it does not promise recovery of every cancelled linked task in a bidirectional or pull-only binding. Existing binding backoff is retained until the next eligible cycle; a successful push cannot clear an unresolved pull failure.
 
 Disable the affected binding before investigating. Compare the original task's `externalId`/`sourceUrl`, remote issue, `item-links.json`, `comment-links.json`, and any pending pull batch. Keep backups of Todu data and plugin state. Existing duplicates require an explicitly approved repair: preserve original task IDs and all unique descriptions, notes, approval/provenance and link state before removing the exact duplicate records. Do not simply delete a duplicate while its remote issue can be imported again, clear plugin state, bypass the host's existing-link guard, or re-enable the binding to test a repair. Determine and reconcile the canonical identities first; remote deletion is a separate approval.
 
-The provider's `lastPushSuccessAt` records remote push work only: API v4 has no host push-application acknowledgment. Use `todu integration status <binding-id>` and daemon cycle logs for the host's end-to-end application result. A provider timestamp alone cannot establish successful host persistence.
+The provider's `lastPushSuccessAt` records remote push work only: API v7 task/comment link application follows provider return and has no provider push-application acknowledgment. Use `todu integration status <binding-id>` and daemon cycle logs for the host's end-to-end application result. A provider timestamp alone cannot establish successful host persistence.
 
 ## Development
 

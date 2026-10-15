@@ -8,12 +8,42 @@ The Forgejo plugin state files are:
 - `comment-links.json`
 - `runtime-state.json`
 - `issue-tombstones.json` (optional until a confirmed deletion is recorded)
+- `v4-drain.json` (the frozen legacy recovery boundary, created only by the explicit drain entrypoint)
 
 The migration script moves only those files. It does not overwrite destination files, leaves unrelated files in the old directory, and removes the old directory only if it becomes empty.
 
-## Runtime checkpoint schema upgrade
+## API v7 adoption and bounded v4 drain
 
-Acknowledged pull checkpoints upgrade unversioned and version 1 `runtime-state.json` records when the plugin reads them. This schema upgrade is independent of moving the storage directory and does not require running the directory-migration script. The plugin registers sync-provider API v4; use a published npm host that supports v4 acknowledgment. API v5 field-group behavior is not enabled by this change.
+This source uses explicit API v7. Supported minimum libraries are core 0.28.0, daemon 0.28.1, and engine 0.24.5; upgrade the supported host before selecting the v7 entrypoint. There is no automatic downgrade or v4-to-v7 payload conversion. Deploying, changing plugin paths/strategies, restarting services, and migrating live data each require separate operational approval; the development task does none of them.
+
+1. Stop the sole sync owner with approval and back up the host data together with every plugin state file. Never run a second engine process against live storage or load both Forgejo entrypoints at once.
+2. Inspect the protected `runtime-state.json` without publishing its imported content. If legacy `pendingPull` exists, select the explicit `@todu/forgejo/v4-drain` entrypoint (or its absolute bundled `dist/forgejo-v4-drain.js` path) instead of the normal entrypoint. Keep the same provider configuration, durable directory, binding/project/repository identity, and supported host. A push-only/disabled binding cannot drain until a separately approved strategy/enablement change permits pull.
+3. On initialization, drain mode atomically creates `v4-drain.json`, including an empty boundary if no work exists. It records SHA-256 digests of the complete original pending batches. It serves only those batches through the original v4 contract, retaining their payloads, identities, timestamps, and checkpoint boundaries. It never discovers new issues/comments and never pushes, even for a bidirectional binding. Scope changes and changed/new batches fail before application. The frozen journal survives restart; do not delete it to admit later work.
+4. Application, flush, acknowledgment failure, or restart leaves the original work recoverable. Retry the same bounded drain. Equal-clock legacy detail repair remains v4 behavior, not proof of per-group mirroring. Corruption, ambiguous provenance, or an unexpected batch requires explicit recovery; preserve every record rather than resetting cursors or guessing.
+5. Only after captured legacy `pendingPull` is durably acknowledged, select the normal v7 entrypoint under separate cutover approval. Its required `recoveryState` blocks all v7 pull/push if legacy pending work exists or the ledger is unreadable/unknown. Keep the frozen drain journal in backups. Do not resume the old unrestricted v4 provider or downgrade after new v7 work has been staged.
+6. Allow fresh group observations to establish equality without writes. A drained v4 batch, `lastMirroredAt`, or an old whole-record clock is not a field baseline. Resolve actual disagreements through separately authorized edits/policy, approve imported content through the normal host approval tools, and configure complete authorized actor mappings before expecting those groups to initialize. There is no implicit remote/local-wins initialization command.
+
+### V7 durable replay and receipts
+
+The outer checkpoint schema remains version 2. An optional `fieldSync` ledger tagged `version: 7` contains the scope, immutable original discovery/comment batch, current token-free issued attempt, unresolved `retryIssueNumbers`, independent `remoteWrites`, creation recovery journal, and last acknowledgment receipt. Missing `fieldSync` is an old installation with unknown field history, not a fabricated baseline. Existing legacy `pendingPull` remains separate and is never relabeled as v7 work. Malformed/sparse/mismatched state blocks recovery rather than resetting it.
+
+Every eligible replay obtains a fresh local observation before rereading authoritative remote initialization values. Original pending bytes/IDs/cursors remain intact; the separately journaled actual attempt supplies the values against which receipts are checked. Observation/exclusion authority tokens are invocation-local and never saved for reuse. The opaque acknowledgment checkpoint includes the immutable original boundary ID/scope and a fresh attempt ID; stale-attempt acknowledgments cannot commit a newer attempt.
+
+The host's ordered `bootstrapResults` and `taskResults` prove actual guarded, flushed local outcomes. The adapter validates counts, identities, supplied groups, canonical values, and persisted/deferred states before any progress. Only `baseline: mirrored` receipts matching that attempt's remote values advance a base without a remote write. Unknown disagreements, pending approval, unmapped assignments, and required remote writes remain durable independently of the committed issue/comment cursors. Acknowledgment saves this work before links/snapshots and saves read progress last; duplicate acknowledgments of the same committed attempt/receipt are harmless. Failed acknowledgment and interrupted commits remain replayable.
+
+Push receives explicit known/deferred groups, not flattened potentially partial assignments. It reconciles fresh exports and remote observations against proven history, uses selective patches, preserves the other label group when workflow/classification share the labels endpoint, and verifies the remote result with a fresh read. Partial endpoint failure retains unverified work; only verified groups advance. Push success cannot commit a pull checkpoint or discard deferred work. Native host guards cover invocation, not a distributed lock during asynchronous API calls; read/revalidate/write is not an atomic Forgejo compare-and-swap or a remote durability guarantee.
+
+Before a new outbound create, the adapter durably records an uncertain creation intent. A returned identity is journaled before link persistence. A lost response or crash at that boundary requires explicit canonical identity repair instead of a second create or metadata-based guess. Preserve the journal and remote issue while investigating. Deferred required create groups do not authorize empty defaults. Existing explicit external IDs/source URLs recover links without assuming a common field baseline.
+
+### Workflow-only deletion follow-up boundary
+
+Ordinary known-baseline workflow updates use three-way reconciliation; they do not force cancellation after local reopening. The supported host separately exposes private local RPCs `integration.prepareWorkflowIntent` and `integration.confirmWorkflowIntent`. Preview asserts binding/task/external identity and the exact source URL when present; confirmation requires explicit human approval and a single-use, five-minute, revision-bound token. Success changes only status to `canceled` and the ordinary edit clock after guarded persistence/flush. Failure, expiry, restart, concurrent edits, or reuse require a new preview; do not persist/replay the token as standing authority.
+
+This path works without a workflow baseline and after reopening. It is not provider pull authority, and a tombstone or HTTP 404 must not be fabricated into a v7 base/clock to force the outcome. Forgejo deletion detection, operator UI/command, tombstone/RPC ordering, crash recovery, and fresh cancellation-exclusion adoption remain `task-f4d98619`. No such operation is implemented or executed by adapter adoption. Issue/comment identity and history stay intact.
+
+## Legacy runtime checkpoint schema upgrade
+
+Acknowledged pull checkpoints upgrade unversioned and version 1 `runtime-state.json` records when the plugin reads them. This schema upgrade is independent of moving the storage directory and does not require running the directory-migration script. This describes the retained legacy v4 checkpoint foundation. The normal provider now uses v7; only the explicit bounded drain entrypoint processes old pending batches using v4 semantics.
 
 - New records contain `checkpointVersion: 2`, `issuePullCursor`, `commentPullCursor`, `lastPushSuccessAt`, `pendingPull`, and `lastAcknowledgedPull`.
 - Version 1 split pull cursors are archived in `preAcknowledgmentCheckpoint` and reset to null: they were recorded before host application and are not proof of local persistence. The known `lastPushSuccessAt` remains intact.
@@ -33,7 +63,7 @@ Expect extra API reads on the first eligible pull after upgrade. Back up plugin 
 
 Snapshot values use published core group types. Labels and stable assignee identities are deduplicated and sorted; an account ID takes precedence over login/display-name metadata, while login-only identities remain exact. Explicit empty values represent deliberately empty content/sets, not missing history. In-memory and file-backed stores share these rules and reject malformed snapshot data instead of silently resetting it. Metadata-only link updates and same-identity task-ID relinking preserve existing baselines. Acknowledgment preserves current baselines rather than reverting to the copies staged earlier.
 
-Protect state backups: content baselines include the mirrored description. Keep snapshots with their binding and external identity during migration/repair. Do not copy baselines onto an unrelated repository or issue, or treat a legacy missing group as an empty value. Field-group reconciliation and winner selection remain separate follow-up tasks.
+Protect state backups: content baselines include the mirrored description. Keep snapshots with their binding and external identity during migration/repair. Do not copy baselines onto an unrelated repository or issue, or treat a legacy missing group as an empty value. V7 adoption uses these snapshots for shared independent reconciliation. Detailed field-specific repair policies remain separate follow-up tasks; unknown history is never silently rewritten to make it compatible with canonical content normalization.
 
 ## Issue-deletion tombstones
 

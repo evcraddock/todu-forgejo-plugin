@@ -33,7 +33,7 @@ The main required divergence from the GitHub plugin is that Forgejo is self-host
 - Webhook-driven sync.
 - Pull request synchronization.
 - Milestones, projects, due dates, reactions, attachments, or issue relationships.
-- Full bidirectional assignee management.
+- Automatic actor creation/authorization or policy-driven assignment resolution when mappings or history are incomplete.
 - A shared generic SCM provider abstraction across GitHub and Forgejo before the Forgejo plugin exists.
 
 ## Design Principles
@@ -211,6 +211,7 @@ Inside `storageDir`, the plugin should keep separate files or equivalent DB coll
 - `comment-links.json`
 - `runtime-state.json`
 - `issue-tombstones.json` (confirmed-deletion storage foundation; not yet consumed by sync)
+- `v4-drain.json` (frozen original-batch digests for explicit, restart-safe bounded v4 recovery)
 - optional diagnostics/error snapshots
 
 Legacy migration only moves the known state files above. It leaves unrelated files in place, removes the legacy directory only if it becomes empty, and fails clearly rather than overwriting current state. Operators can run `npm run migrate:forgejo-storage -- --from <absolute-old-dir> --to <absolute-new-dir>` on each affected machine before changing config; the script is dry-run by default and requires `--write` to move files. `settings.legacyStorageDir` remains available for one-time daemon-start migration when a scripted migration is not practical.
@@ -298,7 +299,7 @@ Content text is preserved verbatim, including an explicitly empty description. N
 
 Missing groups remain unknown, distinct from known empty descriptions, labels, or assignments. Old links without snapshots remain readable and are not automatically seeded from a timestamp, remote discovery, or a v4 pull acknowledgment. `updateForgejoItemFieldSnapshots` explicitly replaces complete supplied groups while retaining other groups; future reconciliation must call it only after successful mirroring is proven. Metadata-only saves and provisional-to-real task relinking preserve baselines for the same binding and remote identity; replacement with a different remote identity does not inherit them. Explicit snapshot maps on a full link save replace that map. Both stores normalize snapshots, reject incomplete/malformed values, and detach reads/writes to prevent mutation of stored baselines. Atomic file writes retain the last valid snapshot state on replacement failure.
 
-The v4 replay path preserves current field-group baselines rather than restoring older copies captured in a pending batch. This storage foundation does not implement field-group winner selection, schedule new remote writes, or adopt provider API v5. Comment baselines remain in the separate comment-link store.
+The explicit v4 drain preserves current field-group baselines rather than restoring older copies captured in a pending batch. The normal provider registers API v7 and reconciles all four groups through scoped observations, explicit known/unknown bases, and verified persisted receipts. Unknown history initializes automatically only on equality; disagreements, approval restrictions, and incomplete mappings remain durable deferred work. Required remote writes remain separate from read progress and only verified remote writes advance their mirrored group. Comment baselines remain in the separate comment-link store. See [safe adoption plan](plans/sync-api-v5-adoption.md) and [bounded recovery](FORGEJO-STORAGE-MIGRATION.md#api-v7-adoption-and-bounded-v4-drain).
 
 ## Sync Scope
 
@@ -336,7 +337,7 @@ The v4 replay path preserves current field-group baselines rather than restoring
 | Priority         | Reserved label               | same scheme as GitHub plugin                   |
 | Labels           | Labels                       | non-reserved only                              |
 | Comments / notes | Issue comments               | mirrored create/edit; deletes do not propagate |
-| Assignees        | Assignees                    | import only in v1                              |
+| Assignees        | Assignees                    | complete authorized mappings only              |
 | Due date         | none                         | stays local to todu                            |
 
 ## Status mapping
@@ -390,16 +391,7 @@ If a label exists in todu but not in the Forgejo repository, the plugin should c
 
 ## Assignees
 
-Assignee sync remains asymmetric in v1:
-
-- Forgejo assignees → imported into todu
-- todu assignees → not pushed to Forgejo
-
-Reason:
-
-- this matches the GitHub plugin's simpler operator model
-- Forgejo assignee APIs and permissions may vary slightly by version/instance
-- delaying push support reduces risky write behavior early on
+The original import-only v1 plan was superseded by actor-based outbound support and the approved decisions in `ISSUE-SYNC-RESEARCH.md`. V7 represents assignment as a complete canonical identity set in both directions. The host owns actor mapping, project authorization, and approval; missing/unmapped/unauthorized identities defer the entire assignment rather than creating actors, authorizing them, or exporting a partial set. Complete known empty sets are deliberate values. Outbound API usernames must resolve from explicit logins or unique stable-account mappings, never display names or guessed account-ID strings. Detailed replacement-policy refinements remain separate work.
 
 If an instance only supports one assignee, the plugin should treat it as a one-element list when importing.
 
@@ -480,10 +472,11 @@ Each polling cycle processes the binding according to strategy:
 - refresh linked item field state
 - discover newly created open issues
 - list comments for linked issues using a comment `since` checkpoint, so comment-only changes do not depend on issue `updated_at` behavior
-- return a durable replay batch with an opaque checkpoint; do not commit read progress yet
-- the API v4 host applies tasks/comments, flushes local storage, then calls `acknowledgePull`
-- acknowledgment commits the staged link snapshots and issue/comment boundaries
-- normalize reserved labels/state if needed
+- obtain fresh scoped local observations before authoritative remote initialization reads; distinguish bootstrap creates from linked group updates
+- return a durable v7 replay attempt with an opaque boundary/attempt checkpoint; do not commit read progress yet
+- the API v7 host independently reconciles known groups, initializes only unknown equality, preserves approval/mapping deferrals, applies tasks/comments, flushes, and returns actual persisted/bootstrap receipts
+- validate ordered receipts and save unresolved groups/remote writes before committing real local link IDs, proven snapshots, and issue/comment boundaries
+- preserve deferred work outside the read cursor; general reserved-label repair policies remain separate work
 
 ### Push path
 
@@ -497,11 +490,14 @@ Each polling cycle processes the binding according to strategy:
 
 Use the same high-level rule as the GitHub plugin: **field-group last-write-wins**, not whole-item last-write-wins.
 
-Field groups:
+Task field groups:
 
-1. title/body
-2. status/priority/labels
-3. comments
+1. content: title/body
+2. workflow: status
+3. classification: priority/normal labels
+4. assignment: complete mapped assignee set
+
+Comments retain their separate origin-sensitive create/edit behavior; this adoption does not introduce task-group reconciliation for comments.
 
 Rationale:
 
@@ -518,7 +514,7 @@ Deletion or disappearance of the linked issue/task maps to cancelation:
 - Forgejo issue target becomes closed + `status:canceled`
 - todu task target becomes `canceled`
 
-During push, an already cancelled local task whose referenced or linked issue is unavailable is a no-op rather than a binding-wide identity failure. Preserve task/comment identity and snapshot state, skip its comment push, and continue other tasks. This exception applies only to an unavailable issue (a null issue read or issue-update HTTP 404), not authentication/permission or transient failures, non-cancelled tasks, or conflicting identities. Available linked issues still receive cancellation. No deletion tombstone or permanent cancellation cache is inferred. API v4 pull does not receive current local task statuses, so missing linked comment endpoints remain blocking there until host support can establish current cancellation safely.
+During push, an already cancelled local task whose referenced or linked issue is unavailable is a no-op rather than a binding-wide identity failure. Preserve task/comment identity and snapshot state, skip its comment push, and continue other tasks. This exception applies only to an unavailable issue (a null issue read or issue-update HTTP 404), not authentication/permission or transient failures, non-cancelled tasks, or conflicting identities. Available linked issues still receive cancellation. No deletion tombstone or permanent cancellation cache is inferred. API v7 now supplies current scoped context, but this adapter still blocks missing linked comment endpoints during pull until the deletion follow-up explicitly consumes fresh cancellation-exclusion receipts. A prior push skip or saved token cannot establish current cancellation. The separate guarded local operator preview/confirm path is available for that follow-up, not ordinary timestamp-based cancellation authority.
 
 Comments no longer remain the exception. Mirrored comment deletes do not propagate across systems. A deleted Forgejo comment or deleted todu note leaves the opposite side intact, which keeps steady-state sync incremental and avoids deletion-driven full comment scans.
 
@@ -534,7 +530,7 @@ Comments no longer remain the exception. Mirrored comment deletes do not propaga
 
 Runtime state keeps separate `issuePullCursor`, `commentPullCursor`, and `lastPushSuccessAt` values. Issue and comment `since` filters use only their respective pull cursors, never a push timestamp or the aggregate `lastSuccessAt`. Push success records `lastPushSuccessAt` without changing either pull cursor. `lastSuccessAt` remains an aggregate success diagnostic, not a read checkpoint.
 
-The plugin explicitly registers the acknowledgment-capable sync-provider API v4 from published `@todu/core`, rather than following the latest API constant (currently v5). The host must support v4: it applies imported tasks/comments and flushes local storage before invoking `acknowledgePull(binding, checkpoint, project)`. Field-group v5 behavior is outside this checkpoint change.
+The normal plugin explicitly registers API v7, with supported minimum core 0.28.0, daemon 0.28.1, and engine 0.24.5. It never follows an unversioned latest constant or automatically downgrades. A separate `@todu/forgejo/v4-drain` entrypoint registers v4 solely for the frozen original pending work; it cannot discover new remote work or push. The legacy checkpoint foundation described below remains the basis for that drain, while v7 adds a tagged `fieldSync` ledger with immutable original work, token-free fresh attempts, unresolved issue retries, independent required writes, and ambiguous-create recovery. Receipt validation and durable unresolved work precede read commit. See the storage guide for the full v7 schema and recovery contract.
 
 A pull captures its read boundary before issue discovery: the pull-start time rounded down to a whole second, minus one second. This bounded overlap replays updates in the start second even on servers with exclusive, second-precision `since` filtering; it does not protect against arbitrary server/client clock skew. Issue/comment link updates, mirrored snapshots, and missing-issue link cleanup are staged in memory. Before returning, the provider saves `pendingPull`, containing the complete replay batch, opaque binding/project/instance-specific token, candidate issue/comment boundaries, and staged link changes. Neither committed pull cursor advances at this point. Comment discovery queries all linked issues, even when their issue timestamps are unchanged or no comment checkpoint exists yet.
 

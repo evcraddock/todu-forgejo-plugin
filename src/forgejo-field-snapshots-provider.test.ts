@@ -17,7 +17,7 @@ import {
   createInMemoryForgejoItemLinkStore,
   updateForgejoItemFieldSnapshots,
 } from "@/forgejo-links";
-import { createForgejoSyncProvider, syncProvider } from "@/forgejo-provider";
+import { createForgejoSyncProvider, syncProvider } from "@/forgejo-legacy-provider";
 
 const binding = {
   id: createIntegrationBindingId("binding-snapshot-provider"),

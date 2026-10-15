@@ -22,6 +22,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./v4-drain": {
+      "types": "./dist/forgejo-v4-drain.d.ts",
+      "import": "./dist/forgejo-v4-drain.js"
     }
   },
   "files": [
@@ -36,7 +40,7 @@
     "generate-version": "node scripts/generate-version.mjs",
     "version:check": "node scripts/generate-version.mjs --check",
     "prebuild": "npm run generate-version",
-    "build": "tsc -p tsconfig.build.json && esbuild src/index.ts --bundle --format=esm --platform=node --outfile=dist/index.js --packages=bundle && node scripts/prepare-declarations.mjs",
+    "build": "tsc -p tsconfig.build.json && esbuild src/index.ts src/forgejo-v4-drain.ts --bundle --format=esm --platform=node --outdir=dist --packages=bundle && node scripts/prepare-declarations.mjs",
     "prebuild:watch": "npm run generate-version",
     "build:watch": "tsc -p tsconfig.build.json --watch --preserveWatchOutput",
     "lint": "eslint .",

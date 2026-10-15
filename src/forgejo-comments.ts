@@ -304,7 +304,7 @@ export async function pushComments(input: {
     owner: string;
     repo: string;
   };
-  tasks: ExportedTaskInput[];
+  tasks: Array<Pick<ExportedTaskInput, "localTaskId" | "comments">>;
   itemLinkStore: ForgejoItemLinkStore;
   commentLinkStore: ForgejoCommentLinkStore;
   loadTaskNotes?: (

@@ -10,7 +10,7 @@ import {
 
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
 import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
-import { createForgejoSyncProvider, syncProvider } from "@/forgejo-provider";
+import { createForgejoSyncProvider, syncProvider } from "@/forgejo-legacy-provider";
 import { createInMemoryForgejoBindingRuntimeStore } from "@/forgejo-runtime";
 
 const binding = {

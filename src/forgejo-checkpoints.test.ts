@@ -12,7 +12,7 @@ import {
 
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
 import { createInMemoryForgejoItemLinkStore } from "@/forgejo-links";
-import { createForgejoSyncProvider } from "@/forgejo-provider";
+import { createForgejoSyncProvider } from "@/forgejo-legacy-provider";
 import {
   createFileForgejoBindingRuntimeStore,
   createInMemoryForgejoBindingRuntimeStore,

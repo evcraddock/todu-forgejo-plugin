@@ -2,7 +2,21 @@
 
 ## Status
 
-Implementation in progress for `task-417bb5b9` after human approval of Option B and the five-stage adapter plan. Both host prerequisites are done and API v7 is published. Approved dependency minimums are `@todu/core` 0.28.0, `@todu/daemon` 0.28.1, and `@todu/engine` 0.24.5. The last two patches add replication socket cleanup without changing the v7 contract. Initial dependency upgrade typecheck and all 434 existing tests pass. Production registration changes follow the staged implementation below; no live cutover, deployment, restart, or state migration is authorized.
+Implementation in progress for `task-417bb5b9` after human approval of Option B and the five-stage adapter plan. Both host prerequisites are done and API v7 is published. Approved dependency minimums are `@todu/core` 0.28.0, `@todu/daemon` 0.28.1, and `@todu/engine` 0.24.5. The last two patches add replication socket cleanup without changing the v7 contract. Initial dependency upgrade typecheck and all 434 existing tests pass. The normal provider now explicitly registers v7 in source. No live cutover, deployment, restart, or state migration is authorized.
+
+## Implementation progress
+
+- [x] Published dependency upgrade and explicit v7 registration; the root factory/public types now use v7.
+- [x] Canonical four-group payloads, fresh per-invocation observations, equality-only unknown initialization, grouped outbound exports, and complete/deferred assignment boundaries.
+- [x] Tagged durable `fieldSync` replay/attempt ledger, receipt validation, independent unresolved/remote-write queues, and selective verified remote writes.
+- [x] Explicit `@todu/forgejo/v4-drain` entrypoint. It persists the captured boundary in `v4-drain.json`, rejects changed/new batches across restart, validates scope before application, and never discovers or pushes.
+- [x] Published native host fixtures for initialization, approval/mapping, mixed winners, comments, flush/ack/push failure, fresh-token replay, concurrent edits, partial endpoints, and operator workflow intent. Existing v4 regression tests explicitly import the retained internal legacy implementation; they do not assert the default v7 contract. Public exports and new host tests exercise the real v7 default.
+- [x] Packed isolated consumer checks cover root API v7 and the explicit drain subpath API v4, including strict consumer declarations.
+- [ ] Final verification, task-linked PR, independent review, and human merge gate.
+
+The orchestration is in `src/forgejo-provider.ts`; normalization/write decisions, durable state validation, and receipt validation are separated into `forgejo-v7-fields.ts`, `forgejo-v7-ledger.ts`, and `forgejo-v7-receipts.ts`. The retained internal v4 provider supplies lifecycle/storage wiring and original replay acknowledgment only to the explicit drain path; the normal v7 path never invokes its legacy pull/push. The drain is a separate bundle/registration, not an automatic downgrade. Full legacy regression tests remain internal, not an alternate public unrestricted v4 entrypoint.
+
+New outbound creates durably journal uncertain/returned identities before link persistence. Ambiguous responses require explicit identity repair rather than duplicate creation or metadata guessing. Complete host push exports retain the existing local-deletion closure with workflow-only writes; provisional/unapplied imports are not interpreted as local deletion, and unavailable targets retain their identities. Detailed local-deletion comment cleanup remains separate work. Native host invocation guards do not lock subsequent asynchronous remote writes.
 
 ## Goal and boundaries
 

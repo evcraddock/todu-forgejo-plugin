@@ -8,6 +8,7 @@ import {
   type ForgejoPullCheckpoint,
 } from "@/forgejo-pull-checkpoint";
 import { writeForgejoStateFile } from "@/forgejo-storage";
+import { validateForgejoFieldSync, type ForgejoFieldSyncState } from "@/forgejo-v7-ledger";
 
 export type ForgejoRuntimeFailurePhase =
   | "pull:issues"
@@ -26,6 +27,8 @@ export interface ForgejoPullFailureContext {
 export interface ForgejoBindingRuntimeState {
   bindingId: IntegrationBinding["id"];
   checkpointVersion: 2;
+  /** Absent in v4; legacy pendingPull is never relabeled as v7 work. */
+  fieldSync?: ForgejoFieldSyncState;
   pendingPull: ForgejoPendingPull | null;
   lastAcknowledgedPull: ForgejoPullCheckpoint | null;
   preAcknowledgmentCheckpoint: {
@@ -336,6 +339,7 @@ export function createFileForgejoBindingRuntimeStore(
           );
         }
       }
+      if (state.fieldSync !== undefined) validateForgejoFieldSync(state.fieldSync, state.bindingId);
       const isLegacy = state.checkpointVersion === undefined;
       const isAcknowledged = state.checkpointVersion === 2;
       if (isAcknowledged) {
