@@ -1,5 +1,7 @@
 import {
   SYNC_TASK_FIELD_GROUPS,
+  validateSyncTaskFieldGroupUpdateV7,
+  type Project,
   type ExportedTaskInputV7,
   type IntegrationBinding,
   type SyncTaskFieldGroupValues,
@@ -21,6 +23,43 @@ import {
   normalizeForgejoFieldSnapshots,
   type ForgejoFieldSnapshots,
 } from "@/forgejo-field-snapshots";
+
+/** Validate new v7 values without rewriting historical/verbatim snapshot storage. */
+export function validateForgejoV7FieldSnapshots(value: unknown): ForgejoFieldSnapshots {
+  const groups = normalizeForgejoFieldSnapshots(value);
+  if (Object.keys(groups).length) {
+    const result = validateSyncTaskFieldGroupUpdateV7({
+      externalId: "forgejo:schema-validation",
+      observationToken: "schema-validation-only",
+      groups: Object.fromEntries(
+        Object.entries(groups).map(([group, remote]) => [
+          group,
+          { base: { state: "unknown" }, remote },
+        ])
+      ),
+    });
+    if (!result.ok) throw new Error(`Invalid Forgejo v7 field value: ${result.error.message}`);
+  }
+  return groups;
+}
+
+/** Raw identity completeness is not proof that replacing the remote set is safe. */
+export function forgejoRemoteAssignmentMapped(
+  groups: ForgejoFieldSnapshots,
+  binding: IntegrationBinding,
+  project: Project
+): boolean {
+  if (!groups.assignment) return false;
+  const authorized = new Set(project.authorizedAssigneeActorIds ?? []);
+  return groups.assignment.assignees.every((identity) => {
+    const matches = (binding.options?.actorMappings ?? []).filter((row) =>
+      identity.externalAccountId
+        ? row.externalAccountId === identity.externalAccountId
+        : row.externalLogin === identity.externalLogin
+    );
+    return matches.length === 1 && authorized.has(matches[0].actorId);
+  });
+}
 
 export function remoteForgejoGroups(
   issue: ForgejoIssue,
@@ -44,7 +83,7 @@ export function remoteForgejoGroups(
         },
       }
     : {};
-  return normalizeForgejoFieldSnapshots({
+  return validateForgejoV7FieldSnapshots({
     content: { title: issue.title.trim(), description: (issue.body ?? "").trim() },
     workflow: { status: normalizeForgejoIssueStatus(issue.state, issue.labels).status },
     classification: {
@@ -55,7 +94,7 @@ export function remoteForgejoGroups(
   });
 }
 export function exportedForgejoGroups(task: ExportedTaskInputV7): ForgejoFieldSnapshots {
-  return normalizeForgejoFieldSnapshots(
+  return validateForgejoV7FieldSnapshots(
     Object.fromEntries(
       SYNC_TASK_FIELD_GROUPS.flatMap((group) => {
         const observed = task.groups[group];

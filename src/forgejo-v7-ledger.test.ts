@@ -34,6 +34,20 @@ describe("v7 durable field-sync ledger", () => {
       },
     },
     { ...createInitialForgejoFieldSync(), pending: {} },
+    { ...createInitialForgejoFieldSync(), scope: "scope", deferredAssignments: [0] },
+    { ...createInitialForgejoFieldSync(), scope: "scope", deferredCommentIssueNumbers: ["7"] },
+    { ...createInitialForgejoFieldSync(), deferredAssignments: [7] },
+    {
+      ...createInitialForgejoFieldSync(),
+      scope: "scope",
+      remoteWrites: {
+        remote: {
+          issueNumber: 1,
+          localTaskId: "task-x",
+          groups: { content: { title: " padded ", description: "Body" } },
+        },
+      },
+    },
     { ...createInitialForgejoFieldSync(), retryIssueNumbers: [7] },
     {
       ...createInitialForgejoFieldSync(),

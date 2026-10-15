@@ -6,10 +6,8 @@ import {
   type SyncTaskFieldGroupUpdateV7,
   type TaskId,
 } from "@todu/core";
-import {
-  normalizeForgejoFieldSnapshots,
-  type ForgejoFieldSnapshots,
-} from "@/forgejo-field-snapshots";
+import type { ForgejoFieldSnapshots } from "@/forgejo-field-snapshots";
+import { validateForgejoV7FieldSnapshots } from "@/forgejo-v7-fields";
 import {
   isForgejoPullCheckpoint,
   validateForgejoPendingPull,
@@ -49,6 +47,10 @@ export interface ForgejoFieldSyncState {
   >;
   pending: ForgejoV7Pending | null;
   retryIssueNumbers: number[];
+  /** Re-fetch these comments without a cursor if a missing local task returns. */
+  deferredCommentIssueNumbers?: number[];
+  /** Native host assignment deferral survives push and restart until a fresh receipt. */
+  deferredAssignments?: number[];
   remoteWrites: Record<string, ForgejoRemoteWrite>;
 }
 export function createInitialForgejoFieldSync(): ForgejoFieldSyncState {
@@ -84,6 +86,14 @@ export function validateForgejoFieldSync(
       !record(value.remoteWrites)
     )
       throw new Error("invalid ledger shape");
+    for (const key of ["deferredCommentIssueNumbers", "deferredAssignments"]) {
+      const list = value[key];
+      if (
+        list !== undefined &&
+        (!dense(list) || !list.every((number) => Number.isInteger(number) && Number(number) > 0))
+      )
+        throw new Error(`invalid ${key}`);
+    }
     if (
       (value.scope !== undefined && (typeof value.scope !== "string" || !value.scope)) ||
       (value.lastReceipt !== undefined && typeof value.lastReceipt !== "string")
@@ -94,6 +104,9 @@ export function validateForgejoFieldSync(
       (value.pending !== null ||
         value.retryIssueNumbers.length > 0 ||
         Object.keys(value.remoteWrites).length > 0 ||
+        (Array.isArray(value.deferredAssignments) && value.deferredAssignments.length > 0) ||
+        (Array.isArray(value.deferredCommentIssueNumbers) &&
+          value.deferredCommentIssueNumbers.length > 0) ||
         (record(value.creations) && Object.keys(value.creations).length > 0))
     )
       throw new Error("nonempty work has no binding/project scope");
@@ -123,7 +136,7 @@ export function validateForgejoFieldSync(
         Number(write.issueNumber) <= 0
       )
         throw new Error("invalid remote write");
-      const groups = normalizeForgejoFieldSnapshots(write.groups);
+      const groups = validateForgejoV7FieldSnapshots(write.groups);
       if (!groups || Object.keys(groups).length === 0) throw new Error("empty remote-write groups");
     }
     if (value.pending === null) return;
@@ -151,9 +164,9 @@ export function validateForgejoFieldSync(
       for (const group of SYNC_TASK_FIELD_GROUPS) {
         const input = update.groups[group];
         if (record(input)) {
-          normalizeForgejoFieldSnapshots({ [group]: input.remote });
+          validateForgejoV7FieldSnapshots({ [group]: input.remote });
           if (record(input.base) && input.base.state === "known")
-            normalizeForgejoFieldSnapshots({ [group]: input.base.value });
+            validateForgejoV7FieldSnapshots({ [group]: input.base.value });
         }
       }
       const valid = validateSyncTaskFieldGroupUpdateV7({

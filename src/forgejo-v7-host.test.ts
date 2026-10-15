@@ -12,6 +12,7 @@ import {
 import { createDaemonLogger, createSyncPluginWorkerRuntime } from "@todu/daemon";
 import { createTodu, type ToduWithInternalTools } from "@todu/engine";
 import { createInMemoryForgejoIssueClient } from "@/forgejo-client";
+import { createHttpForgejoIssueClient } from "@/forgejo-http-client";
 import { createForgejoSyncProvider, syncProvider } from "@/forgejo-provider";
 import { createForgejoSyncProvider as createV4Provider } from "@/forgejo-legacy-provider";
 import { createForgejoV4DrainProvider } from "@/forgejo-v4-drain";
@@ -73,8 +74,8 @@ describe("Forgejo v7 against the published native host", () => {
   ) {
     const ack = vi.spyOn(selected, "acknowledgePull");
     const start = ack.mock.calls.length;
-    const pushed = vi.spyOn(selected, "push");
-    const pushStart = pushed.mock.calls.length;
+    const statusWrites = vi.spyOn(todu.integration, "updateStatus");
+    const statusStart = statusWrites.mock.calls.length;
     const handle = createSyncPluginWorkerRuntime({
       pluginName: "forgejo",
       pluginVersion: selected.version,
@@ -90,11 +91,14 @@ describe("Forgejo v7 against the published native host", () => {
       await vi.waitFor(
         async () => {
           const status = value(await todu.integration.getStatus(binding.id));
-          if (!error) {
-            if (binding.strategy === "push")
-              expect(pushed.mock.calls.length).toBeGreaterThan(pushStart);
-            else expect(ack.mock.calls.length).toBeGreaterThan(start);
-          }
+          // A previous error/idle status cannot satisfy a new cycle's completion.
+          expect(
+            statusWrites.mock.calls
+              .slice(statusStart)
+              .some(
+                ([id, input]) => id === binding.id && input.state === (error ? "error" : "idle")
+              )
+          ).toBe(true);
           expect(status.state, status.lastErrorSummary ?? undefined).toBe(error ? "error" : "idle");
         },
         { timeout: 6000 }
@@ -332,6 +336,215 @@ describe("Forgejo v7 against the published native host", () => {
     expect(runtimeStore().get(binding.id)?.issuePullCursor).toBe(before.issuePullCursor);
     expect(runtimeStore().get(binding.id)?.commentPullCursor).toBe(before.commentPullCursor);
     expect(runtimeStore().get(binding.id)?.fieldSync?.remoteWrites).toEqual({});
+  });
+  it.each(["bidirectional", "push"] as const)(
+    "preserves unmapped remote assignees against a local winner in %s mode",
+    async (strategy) => {
+      const task = await linked(true);
+      const actor = value(
+        await todu.actor.create({ id: "actor-alice" as never, displayName: "Alice" })
+      );
+      project = value(
+        await todu.project.update(project.id, { authorizedAssigneeActorIds: [actor.id] })
+      );
+      binding = value(
+        await todu.integration.update(binding.id, {
+          strategy,
+          options: {
+            actorMappings: [{ actorId: actor.id, externalAccountId: "42", externalLogin: "alice" }],
+          },
+        })
+      );
+      value(await todu.task.update(task.id, { assigneeActorIds: [actor.id] }));
+      client.seedIssues(target, [
+        { ...issue(), assignees: [{ externalAccountId: "999", externalLogin: "unmapped" }] },
+      ]);
+      const patch = vi.spyOn(client, "updateIssue");
+      const acks = await cycle();
+      if (strategy === "bidirectional")
+        expect(acks[0][3]!.taskResults[0].groups.assignment).toEqual({
+          state: "deferred",
+          reason: "incomplete-assignment-mapping",
+        });
+      expect(patch.mock.calls.some(([, , input]) => input.assignees !== undefined)).toBe(false);
+      expect(client.snapshotIssues(target)[0].assignees).toEqual([
+        { externalAccountId: "999", externalLogin: "unmapped" },
+      ]);
+    }
+  );
+  it("retains native assignment deferral across restart/push-only until a fresh successful pull receipt", async () => {
+    const task = await linked(true);
+    const alice = value(
+      await todu.actor.create({ id: "actor-alice" as never, displayName: "Alice" })
+    );
+    const bob = value(await todu.actor.create({ id: "actor-bob" as never, displayName: "Bob" }));
+    project = value(
+      await todu.project.update(project.id, { authorizedAssigneeActorIds: [alice.id, bob.id] })
+    );
+    binding = value(
+      await todu.integration.update(binding.id, {
+        strategy: "bidirectional",
+        options: {
+          actorMappings: [{ actorId: alice.id, externalAccountId: "42", externalLogin: "alice" }],
+        },
+      })
+    );
+    value(await todu.task.update(task.id, { assigneeActorIds: [alice.id] }));
+    client.seedIssues(target, [
+      { ...issue(), assignees: [{ externalAccountId: "99", externalLogin: "bob" }] },
+    ]);
+    const patch = vi.spyOn(client, "updateIssue");
+    await cycle();
+    expect(runtimeStore().get(binding.id)?.fieldSync?.deferredAssignments).toEqual([7]);
+    binding = value(
+      await todu.integration.update(binding.id, {
+        strategy: "push",
+        options: {
+          actorMappings: [
+            { actorId: alice.id, externalAccountId: "42", externalLogin: "alice" },
+            { actorId: bob.id, externalAccountId: "99", externalLogin: "bob" },
+          ],
+        },
+      })
+    );
+    provider = createForgejoSyncProvider({ issueClient: client });
+    await cycle();
+    expect(patch.mock.calls.some(([, , input]) => input.assignees !== undefined)).toBe(false);
+    binding = value(await todu.integration.update(binding.id, { strategy: "bidirectional" }));
+    await cycle();
+    expect(runtimeStore().get(binding.id)?.fieldSync?.deferredAssignments).toEqual([]);
+    expect(client.snapshotIssues(target)[0].assignees).toMatchObject([{ externalLogin: "alice" }]);
+  });
+  it("quarantines ambiguous bidirectional creates before discovery can duplicate the original task", async () => {
+    client.seedIssues(target, []);
+    binding = value(await todu.integration.update(binding.id, { strategy: "bidirectional" }));
+    const original = value(
+      await todu.task.create({ projectId: project.id, title: "Ambiguous", description: "Body" })
+    );
+    const create = client.createIssue.bind(client);
+    vi.spyOn(client, "createIssue").mockImplementationOnce(async (...args) => {
+      await create(...args);
+      throw new Error("response lost after creation");
+    });
+    await cycle(provider, 7, true);
+    const failed = runtimeStore().get(binding.id)!;
+    runtimeStore().save({ ...failed, retryAttempt: 0, nextRetryAt: null });
+    provider = createForgejoSyncProvider({ issueClient: client });
+    const list = vi.spyOn(client, "listIssues");
+    await cycle(provider, 7, true);
+    expect(value(await todu.task.list({ projectId: project.id })).map((task) => task.id)).toEqual([
+      original.id,
+    ]);
+    expect(list).not.toHaveBeenCalled();
+    expect(runtimeStore().get(binding.id)?.fieldSync?.creations?.[original.id]).toEqual({
+      state: "uncertain",
+    });
+    const remote = client.snapshotIssues(target)[0];
+    value(
+      await todu.task.update(original.id, {
+        externalId: remote.externalId,
+        sourceUrl: remote.sourceUrl,
+      })
+    );
+    const blocked = runtimeStore().get(binding.id)!;
+    runtimeStore().save({ ...blocked, retryAttempt: 0, nextRetryAt: null });
+    provider = createForgejoSyncProvider({ issueClient: client });
+    await cycle();
+    expect(value(await todu.task.list({ projectId: project.id }))).toHaveLength(1);
+    expect(value(await todu.task.get(original.id)).externalId).toBe(remote.externalId);
+    expect(client.snapshotIssues(target)).toHaveLength(1);
+    expect(runtimeStore().get(binding.id)?.fieldSync?.creations?.[original.id].state).toBe(
+      "created"
+    );
+  });
+  it("recovers returned-but-unlinked creation through push before bidirectional bootstrap", async () => {
+    client.seedIssues(target, []);
+    binding = value(await todu.integration.update(binding.id, { strategy: "bidirectional" }));
+    const original = value(
+      await todu.task.create({ projectId: project.id, title: "Recover link", description: "Body" })
+    );
+    const injected = links();
+    vi.spyOn(injected, "save").mockImplementationOnce(() => {
+      throw new Error("link storage failure");
+    });
+    provider = createForgejoSyncProvider({ issueClient: client, linkStore: injected });
+    await cycle(provider, 7, true);
+    const failed = runtimeStore().get(binding.id)!;
+    expect(failed.fieldSync?.creations?.[original.id].state).toBe("created");
+    runtimeStore().save({ ...failed, retryAttempt: 0, nextRetryAt: null });
+    provider = createForgejoSyncProvider({ issueClient: client });
+    await cycle();
+    await cycle();
+    const tasks = value(await todu.task.list({ projectId: project.id }));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: original.id,
+      externalId: client.snapshotIssues(target)[0].externalId,
+    });
+    expect(client.snapshotIssues(target)).toHaveLength(1);
+  });
+  it("provisions absent repository labels through the native host and actual HTTP adapter", async () => {
+    const task = await linked(true);
+    binding = value(await todu.integration.update(binding.id, { strategy: "push" }));
+    value(
+      await todu.task.update(task.id, {
+        status: "waiting",
+        labels: ["new-label"],
+        priority: "high",
+      })
+    );
+    const definitions = [
+      { id: 1, name: "status:active" },
+      { id: 2, name: "priority:medium" },
+    ];
+    let remote = {
+      number: 7,
+      title: "Base",
+      body: "Body",
+      state: "open",
+      labels: [...definitions],
+      assignees: [],
+      created_at: OLD,
+      updated_at: OLD,
+      html_url: issue().sourceUrl,
+    };
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const parsed = new URL(String(url));
+      const endpoint = parsed.pathname;
+      const method = init?.method ?? "GET";
+      const input = init?.body ? JSON.parse(String(init.body)) : {};
+      let data: unknown;
+      if (endpoint.endsWith("/issues/7/labels") && method === "PUT") {
+        remote.labels = definitions.filter((label) => input.labels.includes(label.id));
+        data = remote.labels;
+      } else if (endpoint.endsWith("/issues/7") && method === "PATCH") {
+        remote = { ...remote, ...input, updated_at: "2026-10-01T00:00:00Z" };
+        data = remote;
+      } else if (endpoint.endsWith("/issues/7") && method === "GET") data = remote;
+      else if (endpoint.endsWith("/labels") && method === "GET")
+        data = Number(parsed.searchParams.get("page") ?? "1") === 1 ? definitions : [];
+      else if (endpoint.endsWith("/labels") && method === "POST") {
+        const label = { id: definitions.length + 1, name: input.name };
+        definitions.push(label);
+        data = label;
+      } else throw new Error(`Unexpected fixture request ${method} ${url}`);
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    provider = createForgejoSyncProvider({
+      issueClient: createHttpForgejoIssueClient("isolated-token", { fetchImpl }),
+    });
+    await cycle();
+    expect(remote.labels.map((label) => label.name).sort()).toEqual([
+      "new-label",
+      "priority:high",
+      "status:waiting",
+    ]);
+    expect(links().getByTaskId(binding.id, task.id)?.fieldSnapshots?.workflow).toEqual({
+      status: "waiting",
+    });
   });
   it("does not turn incomplete remote assignments into empty replacements", async () => {
     const task = await linked(true);
@@ -701,6 +914,129 @@ describe("Forgejo v7 against the published native host", () => {
     expect(client.snapshotComments(target, 7)).toHaveLength(1);
     expect(client.snapshotComments(target, 7)[0].body).toContain("New local comment");
     expect(links().getByTaskId(binding.id, task.id)?.fieldSnapshots?.content).toBeUndefined();
+  });
+  it("retains omitted missing-local comments independently of the cursor if the task returns", async () => {
+    await linked(true);
+    await cycle();
+    binding = value(await todu.integration.update(binding.id, { strategy: "bidirectional" }));
+    const current = runtimeStore().get(binding.id)!;
+    runtimeStore().save({
+      ...current,
+      commentPullCursor: new Date(Date.now() - 5000).toISOString(),
+      fieldSync: { ...current.fieldSync!, retryIssueNumbers: [7] },
+    });
+    client.seedComments(target, 7, [
+      {
+        id: 31,
+        issueNumber: 7,
+        body: "Retained remote comment",
+        createdAt: new Date(Date.now() - 2000).toISOString(),
+      },
+    ]);
+    const pull = provider.pull.bind(provider);
+    let absent = true;
+    vi.spyOn(provider, "pull").mockImplementation((b, p, context) =>
+      pull(b, p, {
+        ...context,
+        observeTaskGroups: (query) => {
+          if (absent) {
+            absent = false;
+            return Promise.resolve({ state: "missing" as const });
+          }
+          return context.observeTaskGroups(query);
+        },
+      })
+    );
+    await cycle();
+    expect(value(await todu.note.list())).toEqual([]);
+    expect(runtimeStore().get(binding.id)?.fieldSync?.deferredCommentIssueNumbers).toEqual([7]);
+    expect(
+      createFileForgejoCommentLinkStore(path.join(directory, "plugin/comment-links.json")).listAll()
+    ).toEqual([]);
+    await cycle();
+    expect(value(await todu.note.list())).toHaveLength(1);
+    expect(value(await todu.note.list())[0].content).toContain("Retained remote comment");
+    expect(runtimeStore().get(binding.id)?.fieldSync?.deferredCommentIssueNumbers).toEqual([]);
+  });
+  it("does not seed a snapshot from a substituted postwrite verification identity", async () => {
+    const task = await linked(true);
+    value(await todu.task.update(task.id, { title: "New local title" }));
+    binding = value(await todu.integration.update(binding.id, { strategy: "push" }));
+    const get = client.getIssue.bind(client);
+    let reads = 0;
+    vi.spyOn(client, "getIssue").mockImplementation(async (...args) => {
+      const remote = await get(...args);
+      return ++reads === 3 && remote
+        ? { ...remote, externalId: issue(8).externalId, number: 8, sourceUrl: issue(8).sourceUrl }
+        : remote;
+    });
+    await cycle(provider, 7, true);
+    expect(links().getByTaskId(binding.id, task.id)?.fieldSnapshots?.content?.title).toBe("Base");
+    expect(
+      runtimeStore().get(binding.id)?.fieldSync?.remoteWrites[issue().externalId].groups.content
+        ?.title
+    ).toBe("New local title");
+  });
+  it("does not quarantine issue creation when only label preparation failed", async () => {
+    client.seedIssues(target, []);
+    binding = value(await todu.integration.update(binding.id, { strategy: "push" }));
+    const task = value(
+      await todu.task.create({ projectId: project.id, title: "New task", labels: ["new"] })
+    );
+    vi.spyOn(client, "createLabel").mockRejectedValueOnce(new Error("label preparation failed"));
+    const create = vi.spyOn(client, "createIssue");
+    await cycle(provider, 7, true);
+    expect(create).not.toHaveBeenCalled();
+    expect(runtimeStore().get(binding.id)?.fieldSync?.creations?.[task.id]).toBeUndefined();
+  });
+  it("finishes a locally deleted created-task journal without blocking later bidirectional cycles", async () => {
+    client.seedIssues(target, []);
+    binding = value(await todu.integration.update(binding.id, { strategy: "bidirectional" }));
+    const task = value(
+      await todu.task.create({ projectId: project.id, title: "Created then deleted" })
+    );
+    await cycle();
+    expect(runtimeStore().get(binding.id)?.fieldSync?.creations?.[task.id].state).toBe("created");
+    value(await todu.task.delete(task.id));
+    await cycle();
+    await cycle();
+    expect(runtimeStore().get(binding.id)?.fieldSync?.creations?.[task.id]).toBeUndefined();
+    expect(client.snapshotIssues(target)[0].state).toBe("closed");
+    expect(value(await todu.task.list({ projectId: project.id }))).toEqual([]);
+  });
+  it("preserves local-deletion closure under ordinary bidirectional pull-before-push", async () => {
+    const task = await linked(true);
+    binding = value(await todu.integration.update(binding.id, { strategy: "bidirectional" }));
+    await cycle();
+    value(await todu.task.delete(task.id));
+    client.seedIssues(target, [
+      { ...issue(), title: "Remote edit after sync", updatedAt: new Date().toISOString() },
+    ]);
+    const patch = vi.spyOn(client, "updateIssue");
+    await cycle();
+    expect(patch).toHaveBeenCalled();
+    expect(client.snapshotIssues(target)[0]).toMatchObject({
+      state: "closed",
+      title: "Remote edit after sync",
+    });
+    expect(value(await todu.task.list({ projectId: project.id }))).toEqual([]);
+  });
+  it("rejects noncanonical persisted receipts before committing either read cursor", async () => {
+    await linked(true, "Local winner");
+    const acknowledge = provider.acknowledgePull.bind(provider);
+    vi.spyOn(provider, "acknowledgePull").mockImplementation(async (b, checkpoint, p, ack) => {
+      const corrupted = structuredClone(ack!);
+      const outcome = corrupted.taskResults[0].groups.content!;
+      if (outcome.state !== "persisted") throw new Error("Expected persisted content fixture");
+      outcome.value = { title: "  noncanonical  ", description: "  noncanonical body  " };
+      return acknowledge(b, checkpoint, p, corrupted);
+    });
+    await cycle(provider, 7, true);
+    const saved = runtimeStore().get(binding.id)!;
+    expect(saved.issuePullCursor).toBeNull();
+    expect(saved.commentPullCursor).toBeNull();
+    expect(saved.fieldSync?.pending).not.toBeNull();
+    expect(saved.fieldSync?.remoteWrites).toEqual({});
   });
   it("preserves local-deletion closure using a workflow-only patch on complete push exports", async () => {
     const task = await linked(true);

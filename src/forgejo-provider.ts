@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ForgejoIssue } from "@/forgejo-client";
 import {
   SYNC_PROVIDER_API_VERSION_V7,
   SYNC_TASK_FIELD_GROUPS,
@@ -54,6 +55,7 @@ import {
   exportedForgejoGroups,
   forgejoAssignmentLogins,
   forgejoGroupedPatch,
+  forgejoRemoteAssignmentMapped,
   remoteForgejoGroups,
   selectForgejoPushGroups,
 } from "@/forgejo-v7-fields";
@@ -189,6 +191,28 @@ export function createForgejoSyncProvider(
     if (externalId !== formatForgejoIssueExternalId({ ...repository, issueNumber }))
       throw new ForgejoIdentityError("remote issue identity does not match binding");
   };
+  const assertRemote = (
+    binding: IntegrationBinding,
+    issue: ForgejoIssue,
+    number: number,
+    sourceUrl?: string
+  ) => {
+    assertIssue(binding, issue.externalId, number);
+    if (issue.number !== number || (sourceUrl !== undefined && issue.sourceUrl !== sourceUrl))
+      throw new ForgejoIdentityError("remote verification identity/source URL changed");
+  };
+  const ensureLabels = async (binding: IntegrationBinding, labels?: string[]) => {
+    if (!labels?.length) return;
+    const { issueClient } = resources();
+    const repository = target(binding);
+    const existing = new Set(await issueClient.listLabels(repository));
+    for (const label of new Set(labels)) {
+      if (!existing.has(label)) {
+        await issueClient.createLabel(repository, label);
+        existing.add(label);
+      }
+    }
+  };
   const retryAllowed = (binding: IntegrationBinding): boolean => {
     const current = state(binding);
     if (shouldForgejoRetry(current)) return true;
@@ -215,7 +239,8 @@ export function createForgejoSyncProvider(
 
   async function discover(
     binding: IntegrationBinding,
-    project: Project
+    project: Project,
+    context: SyncProviderPullContextV7
   ): Promise<ForgejoV7Pending> {
     const { issueClient, linkStore, commentLinkStore } = resources();
     const repository = target(binding);
@@ -233,10 +258,14 @@ export function createForgejoSyncProvider(
     });
     const retry = new Set([
       ...fields(binding, project).retryIssueNumbers,
+      ...(fields(binding, project).deferredCommentIssueNumbers ?? []),
       ...linkStore
         .list(binding.id)
-        .filter((link) =>
-          SYNC_TASK_FIELD_GROUPS.some((group) => link.fieldSnapshots?.[group] === undefined)
+        .filter(
+          (link) =>
+            SYNC_TASK_FIELD_GROUPS.some((group) => link.fieldSnapshots?.[group] === undefined) ||
+            (link.taskId !== createImportedTaskId(link.externalId) &&
+              context.resolveTask({ localTaskId: link.taskId }).state === "missing")
         )
         .map((link) => link.issueNumber),
     ]);
@@ -259,21 +288,28 @@ export function createForgejoSyncProvider(
     ];
     let comments;
     try {
-      comments = await pullComments({
-        binding,
-        issueClient,
-        target: repository,
-        itemLinkStore: staged.itemStore,
-        commentLinkStore: staged.commentStore,
-        issueNumbers: numbers,
-        since: current.commentPullCursor ?? undefined,
-        onIssueError: ({ itemLink, error }) => {
-          throw new ForgejoIdentityError(
-            `comments for linked issue #${itemLink.issueNumber} are unavailable; links retained`,
-            { cause: error }
-          );
-        },
-      });
+      comments = { comments: [] as NonNullable<ForgejoV7Payload["comments"]> };
+      const deferred = new Set(fields(binding, project).deferredCommentIssueNumbers);
+      for (const full of [false, true]) {
+        const issueNumbers = numbers.filter((number) => deferred.has(number) === full);
+        if (!issueNumbers.length) continue;
+        const pulled = await pullComments({
+          binding,
+          issueClient,
+          target: repository,
+          itemLinkStore: staged.itemStore,
+          commentLinkStore: staged.commentStore,
+          issueNumbers,
+          since: full ? undefined : (current.commentPullCursor ?? undefined),
+          onIssueError: ({ itemLink, error }) => {
+            throw new ForgejoIdentityError(
+              `comments for linked issue #${itemLink.issueNumber} are unavailable; links retained`,
+              { cause: error }
+            );
+          },
+        });
+        comments.comments.push(...pulled.comments);
+      }
     } catch (error) {
       resources().runtimeStore.save({ ...state(binding), pendingCommentIssueNumbers: numbers });
       throw new ForgejoPhaseError("pull:comments", error, cursor);
@@ -306,6 +342,7 @@ export function createForgejoSyncProvider(
       comments: structuredClone(pending.original.result.comments ?? []),
     };
     const updates: SyncTaskFieldGroupUpdateV7[] = [];
+    const locallyMissing = new Set<string>();
     for (const candidate of pending.original.result.tasks) {
       const parsed = parseForgejoIssueExternalId(candidate.externalId);
       assertIssue(binding, candidate.externalId, parsed.issueNumber);
@@ -319,11 +356,13 @@ export function createForgejoSyncProvider(
         throw new ForgejoIdentityError(
           `issue #${parsed.issueNumber} unavailable during fresh observation; pending work retained`
         );
-      assertIssue(binding, issue.externalId, parsed.issueNumber);
+      assertRemote(binding, issue, parsed.issueNumber, candidate.sourceUrl);
       if (issue.isPullRequest) throw new ForgejoIdentityError("issue became a pull request");
       const remote = remoteForgejoGroups(issue, binding);
       if (local.state === "found") {
+        assertRemote(binding, issue, parsed.issueNumber, local.task.sourceUrl);
         const link = linkStore.getByIssueNumber(binding.id, parsed.issueNumber);
+        if (link) assertIssue(binding, link.externalId, parsed.issueNumber);
         if (
           link &&
           link.taskId !== createImportedTaskId(candidate.externalId) &&
@@ -356,10 +395,12 @@ export function createForgejoSyncProvider(
         });
       } else if (local.state === "missing") {
         const linked = linkStore.getByIssueNumber(binding.id, parsed.issueNumber);
-        if (linked && linked.taskId !== createImportedTaskId(candidate.externalId))
-          throw new ForgejoIdentityError(
-            "linked local task is missing; do not recreate it during adoption"
-          );
+        if (linked) assertIssue(binding, linked.externalId, parsed.issueNumber);
+        if (linked && linked.taskId !== createImportedTaskId(candidate.externalId)) {
+          // Retain the real identity for complete-export push closure, never bootstrap it.
+          locallyMissing.add(candidate.externalId);
+          continue;
+        }
         payload.tasks.push({
           ...mapForgejoIssueToImportedTask(issue),
           title: remote.content!.title,
@@ -369,9 +410,20 @@ export function createForgejoSyncProvider(
       } else
         throw new ForgejoIdentityError(`cannot observe ${candidate.externalId}: ${local.state}`);
     }
+    payload.comments = payload.comments?.filter(
+      (comment) => !locallyMissing.has(comment.externalTaskId)
+    );
+    const ledger = fields(binding, project);
+    const missingNumbers = [...locallyMissing].map(
+      (id) => parseForgejoIssueExternalId(id).issueNumber
+    );
     const checkpoint = { ...pending.original.checkpoint, attemptId: randomUUID() };
     save(binding, project, {
-      ...fields(binding, project),
+      ...ledger,
+      retryIssueNumbers: [...new Set([...ledger.retryIssueNumbers, ...missingNumbers])],
+      deferredCommentIssueNumbers: [
+        ...new Set([...(ledger.deferredCommentIssueNumbers ?? []), ...missingNumbers]),
+      ],
       pending: { original: pending.original, attempt: { checkpoint, payload } },
     });
     return {
@@ -380,6 +432,122 @@ export function createForgejoSyncProvider(
       cancelledTaskExclusions: [],
       checkpoint,
     };
+  }
+
+  async function recoverCreations(
+    binding: IntegrationBinding,
+    project: Project,
+    context: SyncProviderPullContextV7
+  ): Promise<boolean> {
+    let waitForPush = false;
+    for (const [localTaskId, creation] of Object.entries(
+      fields(binding, project).creations ?? {}
+    )) {
+      const local = context.resolveTask({
+        localTaskId: localTaskId as ExportedTaskInputV7["localTaskId"],
+      });
+      if (local.state === "found" && local.task.externalId) {
+        const parsed = parseForgejoIssueExternalId(local.task.externalId);
+        assertIssue(binding, local.task.externalId, parsed.issueNumber);
+        if (creation.state === "created" && creation.externalId !== local.task.externalId)
+          throw new ForgejoIdentityError(
+            "creation journal contradicts the repaired local identity"
+          );
+        if (
+          creation.state === "uncertain" ||
+          !resources().linkStore.getByTaskId(binding.id, local.task.localTaskId)
+        ) {
+          const remote = await resources().issueClient.getIssue(
+            target(binding),
+            parsed.issueNumber
+          );
+          if (!remote) throw new ForgejoIdentityError("repaired creation identity is unavailable");
+          assertRemote(binding, remote, parsed.issueNumber, local.task.sourceUrl);
+          const previous = resources().linkStore.getByIssueNumber(binding.id, parsed.issueNumber);
+          if (
+            previous &&
+            previous.taskId !== local.task.localTaskId &&
+            previous.taskId !== createImportedTaskId(remote.externalId)
+          )
+            throw new ForgejoIdentityError("repaired creation belongs to another local task");
+          const ledger = fields(binding, project);
+          save(binding, project, {
+            ...ledger,
+            creations: {
+              ...ledger.creations,
+              [localTaskId]: {
+                state: "created",
+                externalId: remote.externalId,
+                issueNumber: remote.number,
+                sourceUrl: remote.sourceUrl,
+              },
+            },
+            retryIssueNumbers: [...new Set([...ledger.retryIssueNumbers, remote.number])],
+            deferredCommentIssueNumbers: [
+              ...new Set([...(ledger.deferredCommentIssueNumbers ?? []), remote.number]),
+            ],
+          });
+          resources().linkStore.save({
+            ...previous,
+            ...createLinkFromTask({
+              binding,
+              taskId: local.task.localTaskId,
+              ...target(binding),
+              issueNumber: remote.number,
+            }),
+          });
+        }
+      } else if (creation.state === "created" && local.state === "missing") {
+        // Recover deletion after a returned identity, including a crash between
+        // link removal and journal cleanup. Complete push exports still guard closure.
+        if (
+          !resources().linkStore.getByTaskId(
+            binding.id,
+            localTaskId as ExportedTaskInputV7["localTaskId"]
+          )
+        ) {
+          const remote = await resources().issueClient.getIssue(
+            target(binding),
+            creation.issueNumber
+          );
+          if (!remote)
+            throw new ForgejoIdentityError(
+              "returned creation target is unavailable; retain recovery identity"
+            );
+          assertRemote(binding, remote, creation.issueNumber, creation.sourceUrl);
+          const previous = resources().linkStore.getByIssueNumber(binding.id, creation.issueNumber);
+          if (previous && previous.taskId !== localTaskId)
+            throw new ForgejoIdentityError("creation recovery identity belongs to another task");
+          resources().linkStore.save(
+            createLinkFromTask({
+              binding,
+              taskId: localTaskId as ExportedTaskInputV7["localTaskId"],
+              ...target(binding),
+              issueNumber: creation.issueNumber,
+            })
+          );
+        }
+        continue;
+      } else if (
+        creation.state === "created" &&
+        local.state === "found" &&
+        !local.task.externalId &&
+        binding.strategy === "bidirectional"
+      ) {
+        const ledger = fields(binding, project);
+        save(binding, project, {
+          ...ledger,
+          deferredCommentIssueNumbers: [
+            ...new Set([...(ledger.deferredCommentIssueNumbers ?? []), creation.issueNumber]),
+          ],
+        });
+        waitForPush = true; // Attach the returned identity through the supported push-link acknowledgment first.
+      } else
+        throw new ForgejoIdentityError(
+          `ambiguous/unlinked issue creation for ${localTaskId}; explicit canonical identity repair required before discovery`
+        );
+    }
+    return waitForPush;
   }
 
   return {
@@ -408,9 +576,10 @@ export function createForgejoSyncProvider(
       ready(binding, project);
       if (!retryAllowed(binding)) return empty();
       return run(binding, "pull:issues", async () => {
+        if (await recoverCreations(binding, project, context)) return empty();
         let pending = fields(binding, project).pending;
         if (!pending) {
-          pending = await discover(binding, project);
+          pending = await discover(binding, project, context);
           save(binding, project, { ...fields(binding, project), pending });
         }
         return attempt(binding, project, context, pending);
@@ -440,8 +609,19 @@ export function createForgejoSyncProvider(
         const { linkStore, commentLinkStore } = resources();
         const queued = structuredClone(ledger.remoteWrites);
         const retries = new Set(ledger.retryIssueNumbers);
+        const deferredAssignments = new Set(ledger.deferredAssignments);
+        const deferredComments = new Set(ledger.deferredCommentIssueNumbers);
         for (const result of outcomes) {
           const parsed = parseForgejoIssueExternalId(result.externalId);
+          if (result.assignmentDeferred) deferredAssignments.add(parsed.issueNumber);
+          else if (
+            issued.payload.tasks.some((row) => row.externalId === result.externalId) ||
+            issued.payload.taskUpdates.some(
+              (row) => row.externalId === result.externalId && row.groups.assignment
+            )
+          )
+            deferredAssignments.delete(parsed.issueNumber);
+          deferredComments.delete(parsed.issueNumber);
           const existing = linkStore.getByIssueNumber(binding.id, parsed.issueNumber);
           if (
             existing &&
@@ -474,6 +654,8 @@ export function createForgejoSyncProvider(
           ...ledger,
           remoteWrites: queued,
           retryIssueNumbers: [...retries],
+          deferredAssignments: [...deferredAssignments],
+          deferredCommentIssueNumbers: [...deferredComments],
         });
         // Persist actual host IDs first so staged comment links never inherit a provisional task ID.
         for (const result of outcomes) {
@@ -489,7 +671,34 @@ export function createForgejoSyncProvider(
             taskId: result.localTaskId,
           });
         }
-        commitForgejoPullLinks(ledger.pending.original, linkStore, commentLinkStore);
+        const supplied = new Set(
+          [...issued.payload.tasks, ...issued.payload.taskUpdates].map((row) => row.externalId)
+        );
+        const omitted = new Set(
+          ledger.pending.original.result.tasks
+            .filter((row) => !supplied.has(row.externalId))
+            .map((row) => parseForgejoIssueExternalId(row.externalId).issueNumber)
+        );
+        // Omitted missing-local rows did not apply, including their staged comment provenance.
+        commitForgejoPullLinks(
+          {
+            ...ledger.pending.original,
+            itemUpserts: ledger.pending.original.itemUpserts.filter(
+              (link) => !omitted.has(link.issueNumber)
+            ),
+            itemRemovals: ledger.pending.original.itemRemovals.filter(
+              (link) => !omitted.has(link.issueNumber)
+            ),
+            commentUpserts: ledger.pending.original.commentUpserts.filter(
+              (link) => !omitted.has(link.issueNumber)
+            ),
+            commentRemovals: ledger.pending.original.commentRemovals.filter(
+              (link) => !omitted.has(link.issueNumber)
+            ),
+          },
+          linkStore,
+          commentLinkStore
+        );
         for (const result of outcomes) {
           const parsed = parseForgejoIssueExternalId(result.externalId);
           for (const comment of commentLinkStore.listByIssue(binding.id, parsed.issueNumber)) {
@@ -569,6 +778,10 @@ export function createForgejoSyncProvider(
             link?.externalId ??
             sourceIdentity ??
             (creation?.state === "created" ? creation.externalId : undefined);
+          if (creation?.state === "created" && externalId && creation.externalId !== externalId)
+            throw new ForgejoIdentityError(
+              "export identity contradicts the returned creation identity"
+            );
           if (!link && externalId) {
             const parsed = parseForgejoIssueExternalId(externalId);
             assertIssue(binding, externalId, parsed.issueNumber);
@@ -596,11 +809,6 @@ export function createForgejoSyncProvider(
               );
             const logins = forgejoAssignmentLogins(local.assignment, binding);
             if (logins === null) continue;
-            const ledger = fields(binding, project);
-            save(binding, project, {
-              ...ledger,
-              creations: { ...ledger.creations, [task.localTaskId]: { state: "uncertain" } },
-            });
             const flat = {
               ...task,
               ...local.content,
@@ -608,10 +816,14 @@ export function createForgejoSyncProvider(
               ...local.classification,
               assignees: local.assignment.assignees,
             };
-            const created = await issueClient.createIssue(repository, {
-              ...createForgejoIssueCreateFromTask(flat),
-              assignees: logins,
+            const input = { ...createForgejoIssueCreateFromTask(flat), assignees: logins };
+            await ensureLabels(binding, input.labels);
+            const ledger = fields(binding, project);
+            save(binding, project, {
+              ...ledger,
+              creations: { ...ledger.creations, [task.localTaskId]: { state: "uncertain" } },
             });
+            const created = await issueClient.createIssue(repository, input);
             assertIssue(binding, created.externalId, created.number);
             save(binding, project, {
               ...fields(binding, project),
@@ -665,10 +877,16 @@ export function createForgejoSyncProvider(
             externalId: link.externalId,
             sourceUrl: issue.sourceUrl,
           });
+          const remote = remoteForgejoGroups(issue, binding);
+          if (
+            !forgejoRemoteAssignmentMapped(remote, binding, project) ||
+            fields(binding, project).deferredAssignments?.includes(link.issueNumber)
+          )
+            delete remote.assignment;
           const decision = selectForgejoPushGroups({
             base: link.fieldSnapshots ?? {},
             local,
-            remote: remoteForgejoGroups(issue, binding),
+            remote,
             localTimestamp: task.updatedAt,
             remoteTimestamp: issue.updatedAt,
           });
@@ -706,7 +924,8 @@ export function createForgejoSyncProvider(
             retryIssueNumbers: [...retry],
           });
           if (Object.keys(writable).length) {
-            // Re-read immediately before the partial API write; never clobber a newer remote observation.
+            await ensureLabels(binding, patch.labels);
+            // Re-read after label provisioning and immediately before the selective write.
             const latest = await issueClient.getIssue(repository, link.issueNumber);
             if (
               !latest ||
@@ -730,6 +949,7 @@ export function createForgejoSyncProvider(
             }
             const verified = await issueClient.getIssue(repository, link.issueNumber);
             if (!verified) throw new Error("Remote write could not be verified");
+            assertRemote(binding, verified, link.issueNumber, issue.sourceUrl);
             const actual = remoteForgejoGroups(verified, binding);
             for (const group of SYNC_TASK_FIELD_GROUPS)
               if (
@@ -774,27 +994,44 @@ export function createForgejoSyncProvider(
               );
             assertIssue(binding, remote.externalId, orphan.issueNumber);
             if (remote.state !== "closed") {
-              const { patch } = forgejoGroupedPatch(
-                { workflow: { status: "canceled" } },
-                remote,
-                binding
-              );
-              await issueClient.updateIssue(repository, orphan.issueNumber, patch);
-              const verified = await issueClient.getIssue(repository, orphan.issueNumber);
-              if (
-                !verified ||
-                remoteForgejoGroups(verified, binding).workflow?.status !== "canceled"
-              )
-                throw new Error("Local-deletion closure was not verified");
+              await ensureLabels(binding, ["status:canceled"]);
+              const latest = await issueClient.getIssue(repository, orphan.issueNumber);
+              if (!latest)
+                throw new ForgejoIdentityError("local-deletion target became unavailable");
+              assertRemote(binding, latest, orphan.issueNumber, remote.sourceUrl);
+              if (latest.state !== "closed") {
+                const { patch } = forgejoGroupedPatch(
+                  { workflow: { status: "canceled" } },
+                  latest,
+                  binding
+                );
+                await issueClient.updateIssue(repository, orphan.issueNumber, patch);
+                const verified = await issueClient.getIssue(repository, orphan.issueNumber);
+                if (verified) assertRemote(binding, verified, orphan.issueNumber, remote.sourceUrl);
+                if (
+                  !verified ||
+                  remoteForgejoGroups(verified, binding).workflow?.status !== "canceled"
+                )
+                  throw new Error("Local-deletion closure was not verified");
+              }
             }
             linkStore.remove(binding.id, orphan.taskId);
             const ledger = fields(binding, project);
             const writes = { ...ledger.remoteWrites };
             delete writes[orphan.externalId];
+            const creations = { ...ledger.creations };
+            delete creations[orphan.taskId];
             save(binding, project, {
               ...ledger,
               remoteWrites: writes,
+              creations,
               retryIssueNumbers: ledger.retryIssueNumbers.filter(
+                (number) => number !== orphan.issueNumber
+              ),
+              deferredAssignments: ledger.deferredAssignments?.filter(
+                (number) => number !== orphan.issueNumber
+              ),
+              deferredCommentIssueNumbers: ledger.deferredCommentIssueNumbers?.filter(
                 (number) => number !== orphan.issueNumber
               ),
             });

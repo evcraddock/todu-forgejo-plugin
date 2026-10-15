@@ -11,6 +11,7 @@ import {
   type ForgejoFieldSnapshots,
 } from "@/forgejo-field-snapshots";
 import type { ForgejoV7Payload } from "@/forgejo-v7-ledger";
+import { validateForgejoV7FieldSnapshots } from "@/forgejo-v7-fields";
 
 function bootstrapRemote(task: ImportedTaskInput): ForgejoFieldSnapshots {
   return normalizeForgejoFieldSnapshots({
@@ -30,6 +31,7 @@ export interface ForgejoValidatedReceipt {
   mirrored: ForgejoFieldSnapshots;
   writes: ForgejoFieldSnapshots;
   unresolved: boolean;
+  assignmentDeferred: boolean;
 }
 export function validateForgejoV7Receipts(
   payload: ForgejoV7Payload,
@@ -80,6 +82,7 @@ export function validateForgejoV7Receipts(
       mirrored: {},
       writes: {},
       unresolved: false,
+      assignmentDeferred: false,
     };
     for (const group of groups) {
       const outcome = receipt.groups[group];
@@ -93,10 +96,11 @@ export function validateForgejoV7Receipts(
         if (Object.keys(outcome!).some((key) => !["state", "reason"].includes(key)))
           fail("deferred outcome carries a value");
         result.unresolved = true;
+        if (group === "assignment") result.assignmentDeferred = true;
         continue;
       }
       if (outcome.state !== "persisted") fail("unknown outcome state");
-      normalizeForgejoFieldSnapshots({ [group]: outcome.value });
+      validateForgejoV7FieldSnapshots({ [group]: outcome.value });
       if (
         Object.keys(outcome).some(
           (key) => !["state", "value", "baseline", "remoteWriteRequired", "reason"].includes(key)
@@ -122,7 +126,10 @@ export function validateForgejoV7Receipts(
           Object.assign(result.writes, { [group]: outcome.value });
         else if (
           outcome.remoteWriteRequired !== false ||
-          !["initialization-disagreement", "remote-value-unknown"].includes(outcome.reason)
+          knownGroups.includes(group) ||
+          (outcome.reason === "initialization-disagreement"
+            ? remote[group] === undefined
+            : outcome.reason !== "remote-value-unknown" || remote[group] !== undefined)
         )
           fail("invalid unproven outcome");
       } else fail("unknown baseline state");
