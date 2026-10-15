@@ -2,7 +2,7 @@
 
 ## Status
 
-Design investigation for `task-417bb5b9`. The user approved Option B: host-supported safe adoption. Both host prerequisites, `task-c5d79d45` and `task-6daf1fb2`, are now done, with v6 context and v7 initialization/recovery support merged into Todu main. The concrete target is explicitly API v7, not v5. Published distributions inspected during revalidation still support at most v6, and this plugin's installed packages remain older still. The plugin remains registered as API v4; its task stays waiting on a verified v7 distribution and the detailed implementation-plan gate. No production implementation or live cutover is authorized by this revalidation.
+Implementation in progress for `task-417bb5b9` after human approval of Option B and the five-stage adapter plan. Both host prerequisites are done and API v7 is published. Approved dependency minimums are `@todu/core` 0.28.0, `@todu/daemon` 0.28.1, and `@todu/engine` 0.24.5. The last two patches add replication socket cleanup without changing the v7 contract. Initial dependency upgrade typecheck and all 434 existing tests pass. Production registration changes follow the staged implementation below; no live cutover, deployment, restart, or state migration is authorized.
 
 ## Goal and boundaries
 
@@ -43,7 +43,7 @@ Revalidation ran the existing native fixtures from Todu main: core initializatio
 - The required drain is bounded: freeze existing v4 work, use the original v4 host contract only for that work, and stop at its acknowledged boundary without new discovery or push. Define and test the concrete drain-only entrypoint/control before implementation. Do not use automatic downgrade, an unbounded old-provider sync loop, or a second process opening live engine storage.
 - Cancellation uses a single-use, five-minute, revision-bound local preview/confirm token, exact identity/source assertions, explicit human confirmation, and a status-only mutation. It works without a baseline and after reopening but is not a sync payload or persistent cancellation permission. Detection remains ambiguous on 404, and durable tombstone/RPC ordering and crash recovery remain deletion-task design work.
 
-The approved Option B still fits. No new host capability gap was identified in this bounded revalidation; the concrete blockers are a verified v7 distribution and approval of the adapter's refined migration/initialization design. Do not confuse source completion with publication or automatic adapter adoption.
+The approved Option B still fits. No new host capability gap was identified in the bounded revalidation. Subsequently, actual published 0.28.0 core/daemon and 0.24.4 engine tarballs were inspected and confirmed to contain v7 initialization, readiness, receipts, and operator-intent support (release `8a5a96c`). Daemon 0.28.1 / engine 0.24.5 (`81b01fa`) retain that contract and include socket cleanup fixes. The user approved implementation against this updated combination; the original publication and plan-approval blockers are cleared. The earlier npm inspection above is historical evidence, not current availability.
 
 ## Original v5 investigation and evidence
 
@@ -144,8 +144,8 @@ Update architecture/storage compatibility and operational recovery documentation
 
 ## Approved decision and next gate
 
-The user selected Option B and requested the high-priority Todu prerequisite, now tracked as `task-6daf1fb2`. It is an explicit dependency of `task-417bb5b9`. Both host prerequisites are complete in source. Keep the Forgejo task waiting until the v7 host distribution is verified and the concrete implementation plan is approved. The deletion follow-up `task-f4d98619` remains waiting on plugin adoption.
+The user selected Option B; both host prerequisites and the published-distribution gate are satisfied. The user approved the five-stage implementation plan, including deliberate initialization/assignment compatibility boundaries and a separately selected bounded v4 drain. Preflight passed and the task is `inprogress`. The deletion follow-up `task-f4d98619` remains waiting on plugin adoption.
 
-Do not change the provider registration yet. The concrete target is API v7; current published latest versions do not provide it. Next, verify a new supported distribution and obtain approval for the five implementation stages above, including deliberate initialization/assignment compatibility changes, durable attempt journaling, and the bounded drain mechanism. Cancellation plumbing remains a documented/tested host prerequisite for the deletion follow-up, not authority added to ordinary pull. Neither the manual Option A workaround nor a hidden runtime CLI workaround is selected.
+Implement the adapter against the approved published v7 minimums, with durable attempt journaling and explicit v4 drain-only selection rather than automatic downgrade. Cancellation plumbing remains a documented/tested host prerequisite for the deletion follow-up, not authority added to ordinary pull. Next gates are local verification, task-linked PR, independent review, explicit human merge approval, and separately approved closure. Neither a live cutover nor the manual Option A workaround is selected.
 
 The previous statement that no Todu change would be needed was too broad: known-baseline v5 updates require only plugin changes, but the investigated v5 interface does not itself provide the missing initialization/observation and authoritative cancellation semantics described above. Option B required that upstream change, and it is now complete in source; publication and Forgejo adoption remain separate gates.
