@@ -2,17 +2,18 @@
 
 ## Status
 
-Implementation in progress for `task-417bb5b9` after human approval of Option B and the five-stage adapter plan. Both host prerequisites are done and API v7 is published. Approved dependency minimums are `@todu/core` 0.28.0, `@todu/daemon` 0.28.1, and `@todu/engine` 0.24.5. The last two patches add replication socket cleanup without changing the v7 contract. Initial dependency upgrade typecheck and all 434 existing tests pass. The normal provider now explicitly registers v7 in source. No live cutover, deployment, restart, or state migration is authorized.
+Implementation is blocked pending human guidance after three independent review rounds for `task-417bb5b9`. Option B and the five-stage adapter plan were approved, but review has not passed; PR #79 must not merge or deploy. Both host prerequisites are done and API v7 is published. Approved dependency minimums are `@todu/core` 0.28.0, `@todu/daemon` 0.28.1, and `@todu/engine` 0.24.5. The last two patches add replication socket cleanup without changing the v7 contract. Initial dependency upgrade typecheck and all 434 existing tests pass. The normal provider now explicitly registers v7 in source. No live cutover, deployment, restart, or state migration is authorized.
 
 ## Implementation progress
 
 - [x] Published dependency upgrade and explicit v7 registration; the root factory/public types now use v7.
-- [x] Canonical four-group payloads, fresh per-invocation observations, equality-only unknown initialization, grouped outbound exports, and complete/deferred assignment boundaries.
+- [x] Four-group payload plumbing, fresh per-invocation observations, equality-only unknown initialization, grouped outbound exports, and complete/deferred assignment boundaries. Login-only v7 canonical interoperability remains blocked below.
 - [x] Tagged durable `fieldSync` replay/attempt ledger, receipt validation, independent unresolved/remote-write queues, and selective verified remote writes.
 - [x] Explicit `@todu/forgejo/v4-drain` entrypoint. It persists the captured boundary in `v4-drain.json`, rejects changed/new batches across restart, validates scope before application, and never discovers or pushes.
 - [x] Published native host fixtures for initialization, approval/mapping, mixed winners, comments, flush/ack/push failure, fresh-token replay, concurrent edits, partial endpoints, and operator workflow intent. Existing v4 regression tests explicitly import the retained internal legacy implementation; they do not assert the default v7 contract. Public exports and new host tests exercise the real v7 default.
 - [x] Packed isolated consumer checks cover root API v7 and the explicit drain subpath API v4, including strict consumer declarations.
-- [ ] Final verification, task-linked PR, independent review, and human merge gate.
+- [x] Local pre-PR verification, build, packed consumer checks, and task-linked PR #79.
+- [ ] Independent review approval and human merge gate. Three review rounds requested changes; stop/reassessment applies below.
 
 The orchestration is in `src/forgejo-provider.ts`; normalization/write decisions, durable state validation, and receipt validation are separated into `forgejo-v7-fields.ts`, `forgejo-v7-ledger.ts`, and `forgejo-v7-receipts.ts`. The retained internal v4 provider supplies lifecycle/storage wiring and original replay acknowledgment only to the explicit drain path; the normal v7 path never invokes its legacy pull/push. The drain is a separate bundle/registration, not an automatic downgrade. Full legacy regression tests remain internal, not an alternate public unrestricted v4 entrypoint.
 
@@ -27,6 +28,26 @@ Regressions were added before fixes and reproduced all five blockers, including 
 The second review independently confirmed those five fixes and identified two further lifecycle boundaries: comment-only pending replay after local deletion, and imported-task cleanup failure after item-link removal. The next follow-up revalidates every replayed task reference, keeps exact deferred original batches/comment provenance (including the latest captured comment if it subsequently disappears remotely), and persists cleanup before item-link removal for every real linked task. Repeated unchanged captures are deduplicated without rewriting the retained original. An additional isolated native probe found that remote source-URL assertions must not reject a uniquely identified legacy task whose local source URL is absent; only actually present local assertions are supplied, with strict post-fetch identity checks retained.
 
 Native regressions cover real engine/provider restart for both review failures, external-ID-only equality adoption, and omitted comment edits/deletion before restoration. The follow-up passes the full pre-PR gate (525 tests / 34 files), build, packed consumer checks, and diff checks. A fresh independent review of the updated commit remains required before the human merge gate.
+
+## Stop and reassessment after three review rounds
+
+Implementation stops here under the repository's three-attempt rule rather than continuing another local-deletion recovery patch cycle. The third independent review of `7416178` confirmed the specific earlier fixes but still reproduced a different retry source recreating a deleted task. Passing 525 tests, build, package checks, and CI is insufficient for approval. Task status is waiting for direction; no merge, close gate, deployment, or live operation is authorized.
+
+### Remaining verified defects
+
+1. **Login-only assignment interoperability:** the real published host canonicalizes `Alice` to `alice` in legitimate mirrored receipts. The adapter's case-sensitive live comparison rejects those receipts forever for both unknown and known bases, including the actual HTTP representation with an optional/missing account ID. Align all live v7 identity views and mapping/receipt comparisons with host semantics without weakening stable-account conflicts, authorization, or rewriting historical snapshots.
+2. **Outer comment-discovery retry ownership:** a comment-list failure can save `pendingCommentIssueNumbers` before any v7 batch exists. Push-only local-deletion closure clears inner `fieldSync` work and removes the item link but leaves that outer retry. After returning to bidirectional and restarting, the bootstrap helper admits the closed unlinked previously discovered issue and recreates the deleted task. Prior fixes covered new pending batches, held originals and cleanup-save ordering, not every retry source. Preserve unrelated reads and pull cursors while retiring exactly the verified-closed identity.
+3. **Additional parent error-classification probe:** every comment endpoint error is currently wrapped as identity repair. Native isolated probes reproduced lost 401/403 diagnostics and incorrect nonretryable classification for 429/503. Only actual not-found should receive the identity-preserving wrapper; other typed/transport errors must retain their normal classification. A one-line candidate passed four scratch probes but was deliberately not applied to the reviewed branch after the stop decision.
+
+Review evidence is posted on [PR #79](https://github.com/evcraddock/todu-forgejo-plugin/pull/79), including the third review comment `6193509291` and matching task note `note-9f28b6ec`. Temporary independent findings are `/tmp/task-417bb5b9-review-r3-worker-result.txt`; the parent's error probes are `/tmp/forgejo-417bb5b9-error-probe-sP45BX` with red output `/tmp/task-417bb5b9-comment-errors-red.log`. All reviewers' exact tmux sessions were captured and immediately closed; none remain running.
+
+### Approaches considered before asking for guidance
+
+- **A — Another minimal patch:** normalize v7 login identities consistently, remove only the verified-retired issue from the outer retry set, and preserve HTTP errors. Smallest diff, but repeated independent discoveries show that another isolated queue fix risks overlooking a different owner of the same identity.
+- **B — Recovery-model reset in this task (recommended):** first enumerate every owner of read work and canonical identity: outer comment discovery, original v4 work, v7 pending attempts, held originals/provenance, remote writes, creation journals, item/comment links, and unresolved diagnostics. Specify one source-indexed retirement invariant and durable transition ordering before more code. Then implement bounded transitions plus live canonicalization/error fixes, and test the failure × strategy × restart matrix against the published host. Do not introduce a competing host/actor service or remote-deletion confirmation/tombstone workflow.
+- **C — Split a separate plugin prerequisite:** leave this adoption PR unmerged and track the source-indexed local-retirement foundation separately, then resume/rebase adoption through normal review gates. This reduces the combined change surface but needs explicit task/scope approval; it is not permission to merge a partially working adapter, downgrade automatically, or deploy v7 with silently disabled ordinary sync.
+
+No additional Todu capability gap has been established by these remaining probes: the observed canonicalization is an existing host contract, and the missed retry source is plugin-owned. Human direction is required before implementing a fourth recovery revision or creating another prerequisite task.
 
 ## Goal and boundaries
 
