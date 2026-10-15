@@ -1,8 +1,8 @@
-# Safe Forgejo Sync API v5 Adoption
+# Safe Forgejo Field-Group Adoption (API v7 target)
 
 ## Status
 
-Design investigation for `task-417bb5b9`. The user approved Option B: host-supported safe adoption. High-priority Todu task `task-6daf1fb2` supplies the host prerequisite, building on existing current-local-context task `task-c5d79d45`. The Forgejo task is waiting on that support; the plugin remains registered as API v4. Do not implement Option A by default, change the provider registration before the supported host capability is available, or perform a live cutover. Concrete contract implementation and review gates still apply.
+Design investigation for `task-417bb5b9`. The user approved Option B: host-supported safe adoption. Both host prerequisites, `task-c5d79d45` and `task-6daf1fb2`, are now done, with v6 context and v7 initialization/recovery support merged into Todu main. The concrete target is explicitly API v7, not v5. Published distributions inspected during revalidation still support at most v6, and this plugin's installed packages remain older still. The plugin remains registered as API v4; its task stays waiting on a verified v7 distribution and the detailed implementation-plan gate. No production implementation or live cutover is authorized by this revalidation.
 
 ## Goal and boundaries
 
@@ -10,7 +10,42 @@ Adopt a field-group provider boundary for all four existing task groups without 
 
 This task does not deploy the plugin, modify live state, implement issue-deletion confirmation, or change Todu core without separate authorization. It must not report deletion handling unblocked merely because a workflow payload is accepted.
 
-## Investigated versions and evidence
+## Revalidation against the completed Todu host work
+
+### Source support versus published support
+
+Todu main at `fcc7f690f5cff4522a43b7e971f9c98511672829` contains the completed API v7 host implementation from PR #573. Scoped identity/lifecycle support from PR #569 is also present. The canonical provider contract is Todu's `docs/plans/sync-api-v7-adoption.md`, together with `docs/plugin-sync-provider-api.md`, `packages/core/src/sync-initialization.ts`, and the actual daemon implementation. The unchecked review/merge checklist in the host plan is stale; task completion and the local main commit establish the merged state.
+
+Registry metadata and actual downloaded npm tarballs agree on a separate distribution boundary: latest `@todu/core` 0.27.0, `@todu/daemon` 0.27.0, and `@todu/engine` 0.24.3 were published from `5aed44dfcede4008467f23f83da7a4ba7e91ce5b`, before the v7 merge. Published core declares latest API 6, and the downloaded daemon/engine have no v7 initialization or workflow-intent implementation. Upgrading to those versions alone does not unblock this task. No future package version is assumed. The tarball inspection is retained under `/tmp/forgejo-417bb5b9-host-audit-8TETxv`; these are temporary audit artifacts, not dependencies or shipped code.
+
+Revalidation ran the existing native fixtures from Todu main: core initialization validation, daemon initialization, durable initialization/recovery, daemon workflow intent, and engine workflow intent. All 132 tests across five files passed. This verifies the source contract in disposable fixtures, not published v7 availability, a Forgejo adapter implementation, or live readiness. No dependency installation, live daemon/configuration/data changes, or production code edits were performed.
+
+### What Option B now means concretely
+
+| Earlier requirement       | Delivered host contract                                                                                                    | Forgejo responsibility                                                                                                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Safe local observation    | `context.observeTaskGroups`, scoped identity assertions, immutable canonical known/deferred groups, invocation-local token | Obtain the observation before fetching/revalidating authoritative remote initialization values; reject missing/ambiguous identity.                                                        |
+| Unknown history           | Explicit `{ state: "unknown" }` versus `{ state: "known", value }`                                                         | Initialize only verified equality automatically. Preserve disagreements without local or remote writes and retain them for explicit resolution.                                           |
+| Actual persisted outcomes | Ordered `bootstrapResults` and `taskResults`, actual IDs, persisted/deferred group receipts after guarded flush            | Validate receipts against the actual issued attempt; only mirrored receipts can advance a base without an additional verified remote write.                                               |
+| Durable legacy recovery   | Required `recoveryState`; only exact ready admits v7 pull/push                                                             | Inspect the durable ledger, implement a bounded original-v4 drain, preserve original bytes/checkpoints, and block unreadable or unknown state. There is no automatic v4-to-v7 conversion. |
+| Safe outbound groups      | `ExportedTaskInputV7.groups`, known/deferred envelopes and native pre-invocation freshness guards                          | Replace the flattened/full-issue write path; preserve deferred groups and remote fields and revalidate before asynchronous remote writes.                                                 |
+| Confirmed cancellation    | Separate private local `integration.prepareWorkflowIntent` / `integration.confirmWorkflowIntent` RPCs                      | Leave confirmation, tombstone coordination, and operator command design to `task-f4d98619`; ordinary pull updates have no operator authority.                                             |
+
+### Compatibility changes requiring explicit rollout disclosure
+
+- Unknown-history disagreements remain unresolved, even in pull-only operation. Host support removes the need for manual equality initialization, not the need for an explicit policy/operator decision when values differ. Do not silently label preservation as completed reconciliation or introduce remote/local-wins defaults.
+- V7 requires complete existing actor mappings and project authorization for assignment application, including bootstrap. It does not automatically create/authorize missing assignees to establish equality. Preserve unresolved remote assignments durably and retry after mapping/authorization changes; never turn them into empty/partial replacements. This is a deliberate compatibility boundary relative to legacy automatic assignee import and needs implementation-plan approval, not a hidden regression or new plugin-owned actor service.
+- Content pending approval remains deferred. Bootstrap receipts can prove other groups while content is still unknown. Existing verbatim snapshots must not be silently rewritten to satisfy canonical trimming rules.
+- Pull-only receives the required observations and receipts without push. Push-only receives grouped exports but no pull observation token or receipt: retain unknown disagreements, and establish history only through supported verified equality or verified permitted creation/writes, never by inventing a pull acknowledgment.
+- Host receipts certify guarded local persistence against the provider's remote observation, not current remote freshness or durability. Local freshness guards end at callback invocation. The adapter still owns remote revalidation, durable pending writes, selective endpoint updates, and rechecking current intent during retries.
+- V7 inherits v6 cancellation exclusions. Every pull must include `cancelledTaskExclusions`, empty when unused. Any cancellation-based omission needs a fresh scoped lifecycle token and must not overlap returned tasks/comments. This is not deletion evidence, an initialized baseline, or permission to suppress authentication/permission/transient failures.
+- Existing pending v7 work needs fresh invocation tokens on every retry. Keep the original durable work and checkpoint; journal the actual attempt's remote observations separately so receipt validation cannot accidentally compare a fresh attempt to a different frozen remote value. Never reuse persisted observation or cancellation-exclusion tokens. The detailed attempt/journal design remains part of the implementation-plan gate.
+- The required drain is bounded: freeze existing v4 work, use the original v4 host contract only for that work, and stop at its acknowledged boundary without new discovery or push. Define and test the concrete drain-only entrypoint/control before implementation. Do not use automatic downgrade, an unbounded old-provider sync loop, or a second process opening live engine storage.
+- Cancellation uses a single-use, five-minute, revision-bound local preview/confirm token, exact identity/source assertions, explicit human confirmation, and a status-only mutation. It works without a baseline and after reopening but is not a sync payload or persistent cancellation permission. Detection remains ambiguous on 404, and durable tombstone/RPC ordering and crash recovery remain deletion-task design work.
+
+The approved Option B still fits. No new host capability gap was identified in this bounded revalidation; the concrete blockers are a verified v7 distribution and approval of the adapter's refined migration/initialization design. Do not confuse source completion with publication or automatic adapter adoption.
+
+## Original v5 investigation and evidence
 
 The installed published packages are `@todu/core` 0.25.2, `@todu/engine` 0.24.1, and `@todu/daemon` 0.25.1. The inspected public types are `sync-provider.d.ts` and `sync-field-groups.d.ts`. The application behavior is implemented by the published daemon's `sync-worker-runtime.js` and `sync-field-group-pull.js`, with decisions in the engine's `sync-field-groups.js`.
 
@@ -41,7 +76,7 @@ These probes verify contract behavior, not a finished plugin implementation or a
 
 Consequently, a manifest-only upgrade, a content-only upgrade that silently drops other imports, or a v5 wrapper that retains linked whole-task replacement is not an acceptable implementation.
 
-## Remaining adoption gaps
+## Original v5 adoption gaps (historical)
 
 ### Unknown baselines and local observation
 
@@ -61,7 +96,7 @@ Without a host-assisted migration path, the safe operational alternative is to f
 
 A workflow-only v5 update is supported when its baseline is known, but it is not an unconditional cancellation directive. In particular, `base=canceled`, `local=active`, `remote=canceled` is a local-only edit, so timestamp tie rules are not consulted and the host selects active. A newer divergent local workflow can also win a timestamp conflict.
 
-Do not falsify a baseline or clock to make cancellation win. The deletion follow-up needs either a separately authorized status-only operator action, or a versioned host capability that represents confirmed operator intent without treating it as ordinary remote last-write-wins. These are alternative designs; neither is implemented or silently selected here.
+Do not falsify a baseline or clock to make cancellation win. The deletion follow-up needs either a separately authorized status-only operator action, or a versioned host capability that represents confirmed operator intent without treating it as ordinary remote last-write-wins. These were alternative designs at the original investigation. The completed v7 host now supplies the separate guarded local operator action described above; the Forgejo confirmation/tombstone flow remains unimplemented.
 
 ## Assessed rollout options
 
@@ -83,21 +118,21 @@ Identify an upstream contract prerequisite providing these capabilities, without
 - A documented route for durable mixed/partially applied v4 batches, or an explicitly enforced drain phase. Recovery must retain the original batch, local edits, identities, and read boundaries.
 - If sync itself must enforce confirmed deletion, a narrowly scoped operator-authorized workflow action with identity checks and guarded status-only persistence; keep this separate from ordinary timestamp conflict resolution.
 
-Option B is selected. Todu task `task-6daf1fb2` owns safe initialization, persisted-value receipts, legacy recovery, and the explicit workflow-intent/guarded status-only path. It depends on `task-c5d79d45` for host-supplied local context rather than inventing a competing context service. After the supported host capability is available, implement the plugin adapter and run the published-host integration matrix. The host task has its own readiness, plan, review, and merge gates; this plugin task does not authorize editing Todu core or deploying either project.
+Option B is selected, and its host source work is complete. Todu task `task-6daf1fb2` delivered v7 initialization, persisted-value receipts, legacy readiness/drain support, and the separate guarded local workflow RPC, building on `task-c5d79d45`. After a verified v7 distribution is available and the concrete plugin plan is approved, implement the adapter and run the published-host integration matrix. This plugin task does not authorize publishing/editing Todu core or deploying either project.
 
 ## Shared plugin implementation stages after design approval
 
 ### 1. Contract boundary and payloads
 
-Register the explicitly supported version; separate creates from linked updates; preserve all four ordinary field groups. Normalize content according to the actual host validation rules, label sets according to the existing snapshot contract, and assignments according to canonical mapped identities. Do not silently alter old verbatim content snapshots to fit host trimming rules; validate/reinitialize them under the approved policy.
+Require a verified published v7 core/engine/daemon combination and explicitly register `SYNC_PROVIDER_API_VERSION_V7` / `SyncProviderV7`, rejecting older hosts without fallback. Implement required `recoveryState` and consume grouped outbound exports as well as token-bearing pull updates and v7 receipts; a registration-only change is insufficient. Separate creates from linked updates; preserve all four ordinary field groups within the disclosed initialization/approval/mapping boundaries. Normalize content according to the actual host validation rules, label sets according to the existing snapshot contract, and assignments according to canonical mapped identities. Do not silently alter old verbatim content snapshots to fit host trimming rules; validate/reinitialize them under the approved policy.
 
 ### 2. Initialization and durable migration
 
-Implement the selected unknown-baseline and v4 replay policy. Version the pending batch schema explicitly, preserving old data and recovery paths. Never infer an initialized group merely from `lastMirroredAt`. Validate malformed, sparse, partially initialized, mismatched-identity, and deferred-assignment state.
+Implement equality-only unknown-baseline initialization with fresh local observation followed by authoritative remote revalidation. Retain disagreements, approval-deferred groups, and incomplete assignments outside read progress. Implement a durable readiness gate and bounded original-v4 drain, not conversion under v7 or automatic downgrade. Version the pending batch schema explicitly, preserving old data and recovery paths; keep ephemeral tokens out of reusable state and bind receipts to the actual fresh attempt without overwriting original pending work. Never infer an initialized group merely from `lastMirroredAt`. Validate malformed, sparse, partially initialized, mismatched-identity, and deferred-assignment state.
 
 ### 3. Acknowledgment and partial writes
 
-Validate receipt count, ordering, identities, group membership, and outcome shapes against the saved batch. Commit snapshots only when local persistence and any required remote mirror are verified. Persist required remote writes before committing pull progress; preserve newer local/exported intent during retry. Replace the ordinary full-issue builder in the grouped path with selective updates. Workflow/classification share Forgejo's label endpoint, so retain unrelated reserved/normal labels through a verified read/merge rather than clobbering another group. This necessary shared write isolation is included here; detailed repair policies stay in follow-up tasks.
+Validate both `bootstrapResults` and `taskResults`: count, ordering, actual local/external identities, supplied group membership, canonical values, and persisted/deferred/baseline states against the staged work and issued attempt. Do not expect v5 conflict/winner objects in the v7 receipt shape. Commit snapshots only when local persistence and any required remote mirror are verified. Persist required remote writes before committing pull progress; preserve newer local/exported intent during retry. Replace the ordinary full-issue builder in the grouped path with selective updates. Workflow/classification share Forgejo's label endpoint, so retain unrelated reserved/normal labels through a verified read/merge rather than clobbering another group. This necessary shared write isolation is included here; detailed repair policies stay in follow-up tasks.
 
 ### 4. Strategy and recovery coverage
 
@@ -109,8 +144,8 @@ Update architecture/storage compatibility and operational recovery documentation
 
 ## Approved decision and next gate
 
-The user selected Option B and requested the high-priority Todu prerequisite, now tracked as `task-6daf1fb2`. It is an explicit dependency of `task-417bb5b9`. Keep the Forgejo task waiting until the supported host implementation is available. The deletion follow-up `task-f4d98619` remains waiting on plugin adoption.
+The user selected Option B and requested the high-priority Todu prerequisite, now tracked as `task-6daf1fb2`. It is an explicit dependency of `task-417bb5b9`. Both host prerequisites are complete in source. Keep the Forgejo task waiting until the v7 host distribution is verified and the concrete implementation plan is approved. The deletion follow-up `task-f4d98619` remains waiting on plugin adoption.
 
-Do not change the provider registration yet. Adopt the explicitly negotiated version/capability delivered by the host task rather than hardcoding v5 if the extension requires a successor version. Review the concrete capability, initialization rules, replay strategy, and workflow-intent semantics before resuming plugin implementation. Neither the manual Option A workaround nor a hidden runtime CLI workaround is selected.
+Do not change the provider registration yet. The concrete target is API v7; current published latest versions do not provide it. Next, verify a new supported distribution and obtain approval for the five implementation stages above, including deliberate initialization/assignment compatibility changes, durable attempt journaling, and the bounded drain mechanism. Cancellation plumbing remains a documented/tested host prerequisite for the deletion follow-up, not authority added to ordinary pull. Neither the manual Option A workaround nor a hidden runtime CLI workaround is selected.
 
-The previous statement that no Todu change would be needed was too broad: known-baseline v5 updates require only plugin changes, but the investigated v5 interface does not itself provide the missing initialization/observation and authoritative cancellation semantics described above. Whether an upstream change is required depends on the operational policy chosen here.
+The previous statement that no Todu change would be needed was too broad: known-baseline v5 updates require only plugin changes, but the investigated v5 interface does not itself provide the missing initialization/observation and authoritative cancellation semantics described above. Option B required that upstream change, and it is now complete in source; publication and Forgejo adoption remain separate gates.
