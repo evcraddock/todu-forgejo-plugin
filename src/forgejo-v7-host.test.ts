@@ -211,6 +211,28 @@ describe("Forgejo v7 against the published native host", () => {
     );
     expect(requests).not.toHaveBeenCalled();
   });
+  it("initializes an explicitly identified legacy task without inventing a missing local source URL", async () => {
+    const task = value(
+      await todu.task.create({
+        projectId: project.id,
+        title: "Base",
+        description: "Body",
+        externalId: issue().externalId,
+      })
+    );
+    links().save({
+      bindingId: binding.id,
+      taskId: task.id,
+      issueNumber: 7,
+      externalId: issue().externalId,
+    });
+    await cycle();
+    expect(value(await todu.task.get(task.id)).sourceUrl).toBeUndefined();
+    expect(value(await todu.task.list({ projectId: project.id }))).toHaveLength(1);
+    expect(links().getByTaskId(binding.id, task.id)?.fieldSnapshots).toEqual(
+      remoteForgejoGroups(issue(), binding)
+    );
+  });
   it("initializes every equal unknown group in pull-only operation without rewriting the task", async () => {
     const task = await linked();
     const update = vi.spyOn(todu.task, "update");
@@ -939,10 +961,7 @@ describe("Forgejo v7 against the published native host", () => {
       pull(b, p, {
         ...context,
         observeTaskGroups: (query) => {
-          if (absent) {
-            absent = false;
-            return Promise.resolve({ state: "missing" as const });
-          }
+          if (absent) return Promise.resolve({ state: "missing" as const });
           return context.observeTaskGroups(query);
         },
       })
@@ -953,10 +972,26 @@ describe("Forgejo v7 against the published native host", () => {
     expect(
       createFileForgejoCommentLinkStore(path.join(directory, "plugin/comment-links.json")).listAll()
     ).toEqual([]);
+    expect(
+      runtimeStore().get(binding.id)?.fieldSync?.deferredPulls?.[0].original.result.comments?.[0]
+        .body
+    ).toContain("Retained remote comment");
+    const prior = client.snapshotComments(target, 7)[0];
+    client.seedComments(target, 7, [
+      { ...prior, body: "Newest captured comment", updatedAt: new Date().toISOString() },
+    ]);
+    await cycle();
+    expect(value(await todu.note.list())).toEqual([]);
+    expect(runtimeStore().get(binding.id)?.fieldSync?.deferredPulls).toHaveLength(2);
+    // Comment deletion does not propagate: use the latest captured version,
+    // retaining original bytes until that version actually applies.
+    client.seedComments(target, 7, []);
+    absent = false;
     await cycle();
     expect(value(await todu.note.list())).toHaveLength(1);
-    expect(value(await todu.note.list())[0].content).toContain("Retained remote comment");
+    expect(value(await todu.note.list())[0].content).toContain("Newest captured comment");
     expect(runtimeStore().get(binding.id)?.fieldSync?.deferredCommentIssueNumbers).toEqual([]);
+    expect(runtimeStore().get(binding.id)?.fieldSync?.deferredPulls).toEqual([]);
   });
   it("does not seed a snapshot from a substituted postwrite verification identity", async () => {
     const task = await linked(true);
@@ -988,6 +1023,69 @@ describe("Forgejo v7 against the published native host", () => {
     await cycle(provider, 7, true);
     expect(create).not.toHaveBeenCalled();
     expect(runtimeStore().get(binding.id)?.fieldSync?.creations?.[task.id]).toBeUndefined();
+  });
+  it("rechecks comment-only pending references after flush failure, local deletion and actual host restart", async () => {
+    const task = await linked(true);
+    binding = value(await todu.integration.update(binding.id, { strategy: "bidirectional" }));
+    await cycle();
+    client.seedComments(target, 7, [
+      { id: 61, issueNumber: 7, body: "Only comment changed", createdAt: new Date().toISOString() },
+    ]);
+    vi.spyOn(todu.__internal.syncRuntime, "flush").mockRejectedValueOnce(
+      new Error("comment-only flush failure")
+    );
+    await cycle(provider, 7, true);
+    const pending = runtimeStore().get(binding.id)!.fieldSync!.pending!;
+    expect(pending.original.result.tasks).toEqual([]);
+    expect(pending.original.result.comments).toHaveLength(1);
+    value(await todu.task.delete(task.id));
+    await todu.close();
+    todu = (await createTodu({
+      storagePath: path.join(directory, "host"),
+    })) as ToduWithInternalTools;
+    provider = createForgejoSyncProvider({ issueClient: client });
+    await cycle();
+    expect(runtimeStore().get(binding.id)?.fieldSync?.pending).toBeNull();
+    expect(client.snapshotIssues(target)[0].state).toBe("closed");
+    expect(value(await todu.task.list({ projectId: project.id }))).toEqual([]);
+  });
+  it("retains imported-task identity until closure cleanup is durable across failure and restart", async () => {
+    await cycle();
+    const task = value(await todu.task.list({ projectId: project.id }))[0];
+    value(await todu.approval.approveTaskDescription(task.id));
+    binding = value(await todu.integration.update(binding.id, { strategy: "bidirectional" }));
+    await cycle();
+    value(await todu.task.delete(task.id));
+    const store = runtimeStore();
+    const save = store.save.bind(store);
+    let failed = false;
+    vi.spyOn(store, "save").mockImplementation((state) => {
+      if (
+        !failed &&
+        client.snapshotIssues(target)[0].state === "closed" &&
+        state.fieldSync?.retryIssueNumbers.length === 0
+      ) {
+        failed = true;
+        throw new Error("closure cleanup save failed");
+      }
+      save(state);
+    });
+    provider = createForgejoSyncProvider({ issueClient: client, runtimeStore: store });
+    await cycle(provider, 7, true);
+    expect(failed).toBe(true);
+    expect(links().getByTaskId(binding.id, task.id)?.externalId).toBe(issue().externalId);
+    const retained = runtimeStore().get(binding.id)!;
+    runtimeStore().save({ ...retained, retryAttempt: 0, nextRetryAt: null });
+    await todu.close();
+    todu = (await createTodu({
+      storagePath: path.join(directory, "host"),
+    })) as ToduWithInternalTools;
+    provider = createForgejoSyncProvider({ issueClient: client });
+    await cycle();
+    await cycle();
+    expect(value(await todu.task.list({ projectId: project.id }))).toEqual([]);
+    expect(links().list(binding.id)).toEqual([]);
+    expect(runtimeStore().get(binding.id)?.fieldSync?.retryIssueNumbers).toEqual([]);
   });
   it("finishes a locally deleted created-task journal without blocking later bidirectional cycles", async () => {
     client.seedIssues(target, []);

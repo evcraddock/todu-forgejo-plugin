@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   SYNC_TASK_FIELD_GROUPS,
   validateSyncTaskFieldGroupUpdateV7,
@@ -35,6 +36,54 @@ export interface ForgejoRemoteWrite {
   issueNumber: number;
   groups: ForgejoFieldSnapshots;
 }
+export interface ForgejoDeferredPull {
+  /** Exact captured batch retained until its omitted references apply or closure verifies. */
+  original: ForgejoPendingPull;
+  externalIds: string[];
+}
+export function resolveForgejoDeferredPulls(
+  existing: ForgejoDeferredPull[] | undefined,
+  applied: ReadonlySet<string>,
+  held?: ForgejoDeferredPull
+): ForgejoDeferredPull[] {
+  const retained = (existing ?? [])
+    .map((entry) => ({ ...entry, externalIds: entry.externalIds.filter((id) => !applied.has(id)) }))
+    .filter((entry) => entry.externalIds.length > 0);
+  if (held?.externalIds.length) {
+    const previous = retained.find(
+      (entry) => entry.original.checkpoint.id === held.original.checkpoint.id
+    );
+    if (previous) {
+      if (JSON.stringify(previous.original) !== JSON.stringify(held.original))
+        throw new Error("Deferred original checkpoint changed");
+      previous.externalIds = [...new Set([...previous.externalIds, ...held.externalIds])];
+    } else {
+      // Unchanged absence must not append the same full batch on every poll.
+      // Keep every changed captured value until application/verified closure.
+      const latest = (entries: ForgejoDeferredPull[]) => {
+        const tasks = new Map<
+          string,
+          Map<string, NonNullable<ForgejoV7Payload["comments"]>[number]>
+        >();
+        for (const entry of entries) {
+          const refs = new Set(entry.externalIds);
+          for (const id of refs) if (!tasks.has(id)) tasks.set(id, new Map());
+          for (const comment of entry.original.result.comments ?? [])
+            if (refs.has(comment.externalTaskId))
+              tasks.get(comment.externalTaskId)!.set(comment.externalId, comment);
+        }
+        return tasks;
+      };
+      const before = latest(retained);
+      const next = latest([held]);
+      const externalIds = held.externalIds.filter(
+        (id) => !before.has(id) || !isDeepStrictEqual(before.get(id), next.get(id))
+      );
+      if (externalIds.length) retained.push(structuredClone({ ...held, externalIds }));
+    }
+  }
+  return retained;
+}
 export interface ForgejoFieldSyncState {
   version: 7;
   scope?: string;
@@ -49,6 +98,8 @@ export interface ForgejoFieldSyncState {
   retryIssueNumbers: number[];
   /** Re-fetch these comments without a cursor if a missing local task returns. */
   deferredCommentIssueNumbers?: number[];
+  /** Raw unapplied comments/provenance survive cursor advance and remote deletion. */
+  deferredPulls?: ForgejoDeferredPull[];
   /** Native host assignment deferral survives push and restart until a fresh receipt. */
   deferredAssignments?: number[];
   remoteWrites: Record<string, ForgejoRemoteWrite>;
@@ -104,12 +155,39 @@ export function validateForgejoFieldSync(
       (value.pending !== null ||
         value.retryIssueNumbers.length > 0 ||
         Object.keys(value.remoteWrites).length > 0 ||
+        (Array.isArray(value.deferredPulls) && value.deferredPulls.length > 0) ||
         (Array.isArray(value.deferredAssignments) && value.deferredAssignments.length > 0) ||
         (Array.isArray(value.deferredCommentIssueNumbers) &&
           value.deferredCommentIssueNumbers.length > 0) ||
         (record(value.creations) && Object.keys(value.creations).length > 0))
     )
       throw new Error("nonempty work has no binding/project scope");
+    if (value.deferredPulls !== undefined) {
+      if (!dense(value.deferredPulls)) throw new Error("invalid deferred original batches");
+      const seen = new Set<string>();
+      for (const deferred of value.deferredPulls) {
+        if (
+          !record(deferred) ||
+          !dense(deferred.externalIds) ||
+          !deferred.externalIds.length ||
+          !deferred.externalIds.every((id) => typeof id === "string" && id.length > 0)
+        )
+          throw new Error("invalid deferred task references");
+        validateForgejoPendingPull(deferred.original, bindingId);
+        if (
+          deferred.original.checkpoint.scope !== value.scope ||
+          seen.has(deferred.original.checkpoint.id)
+        )
+          throw new Error("deferred original scope/identity mismatch");
+        seen.add(deferred.original.checkpoint.id);
+        const refs = new Set([
+          ...deferred.original.result.tasks.map((task) => task.externalId),
+          ...(deferred.original.result.comments ?? []).map((comment) => comment.externalTaskId),
+        ]);
+        if (deferred.externalIds.some((id) => !refs.has(id as string)))
+          throw new Error("deferred reference absent from original batch");
+      }
+    }
     if (value.creations !== undefined) {
       if (!record(value.creations)) throw new Error("invalid creation journal");
       for (const [id, creation] of Object.entries(value.creations)) {
@@ -142,6 +220,8 @@ export function validateForgejoFieldSync(
     if (value.pending === null) return;
     if (!record(value.pending)) throw new Error("invalid pending work");
     validateForgejoPendingPull(value.pending.original, bindingId);
+    if (value.pending.original.checkpoint.scope !== value.scope)
+      throw new Error("pending original scope mismatch");
     const attempt = value.pending.attempt;
     if (attempt === null) return;
     if (

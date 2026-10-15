@@ -45,6 +45,7 @@ import {
 } from "@/forgejo-runtime";
 import {
   createInitialForgejoFieldSync,
+  resolveForgejoDeferredPulls,
   isForgejoV7Checkpoint,
   validateForgejoFieldSync,
   type ForgejoFieldSyncState,
@@ -314,6 +315,29 @@ export function createForgejoSyncProvider(
       resources().runtimeStore.save({ ...state(binding), pendingCommentIssueNumbers: numbers });
       throw new ForgejoPhaseError("pull:comments", error, cursor);
     }
+    // Prefer current remote values, but never lose captured unapplied comments
+    // merely because the remote comment was deleted while its task was absent.
+    const key = (comment: NonNullable<ForgejoV7Payload["comments"]>[number]) =>
+      JSON.stringify([comment.externalTaskId, comment.externalId]);
+    const fresh = new Map(comments.comments.map((comment) => [key(comment), comment]));
+    for (const deferred of [...(fields(binding, project).deferredPulls ?? [])].reverse()) {
+      const refs = new Set(deferred.externalIds);
+      const fallbackIds = new Set<string>();
+      for (const comment of deferred.original.result.comments ?? []) {
+        if (refs.has(comment.externalTaskId) && !fresh.has(key(comment))) {
+          fresh.set(key(comment), structuredClone(comment));
+          fallbackIds.add(comment.externalId);
+        }
+      }
+      for (const link of deferred.original.commentUpserts) {
+        if (
+          fallbackIds.has(String(link.forgejoCommentId)) &&
+          refs.has(formatForgejoIssueExternalId({ ...repository, issueNumber: link.issueNumber }))
+        )
+          staged.commentStore.save(structuredClone(link));
+      }
+    }
+    comments.comments = [...fresh.values()];
     return {
       original: {
         checkpoint: createForgejoPullCheckpoint(scope(binding, project)),
@@ -343,13 +367,40 @@ export function createForgejoSyncProvider(
     };
     const updates: SyncTaskFieldGroupUpdateV7[] = [];
     const locallyMissing = new Set<string>();
+    // A durable incremental batch can reference a task only through comments.
+    // Revalidate those references on every replay, not just discovered task rows.
+    const taskRows = new Set(pending.original.result.tasks.map((row) => row.externalId));
+    for (const externalId of new Set(
+      (pending.original.result.comments ?? []).map((comment) => comment.externalTaskId)
+    )) {
+      if (taskRows.has(externalId)) continue;
+      const parsed = parseForgejoIssueExternalId(externalId);
+      assertIssue(binding, externalId, parsed.issueNumber);
+      const local = context.resolveTask({ externalId });
+      const link = linkStore.getByIssueNumber(binding.id, parsed.issueNumber);
+      if (link) assertIssue(binding, link.externalId, parsed.issueNumber);
+      if (local.state === "missing" && link && link.taskId !== createImportedTaskId(externalId))
+        locallyMissing.add(externalId);
+      else if (
+        local.state !== "found" ||
+        (link &&
+          link.taskId !== local.task.localTaskId &&
+          link.taskId !== createImportedTaskId(externalId))
+      )
+        throw new ForgejoIdentityError(
+          `cannot resolve replayed comment task ${externalId}: ${local.state}`
+        );
+    }
     for (const candidate of pending.original.result.tasks) {
       const parsed = parseForgejoIssueExternalId(candidate.externalId);
       assertIssue(binding, candidate.externalId, parsed.issueNumber);
       // The token precedes the authoritative remote read, including on replay.
+      const identity = context.resolveTask({ externalId: candidate.externalId });
+      // Assert an existing local URL when present, not an unstored remote URL.
+      const sourceUrl = identity.state === "found" ? identity.task.sourceUrl : candidate.sourceUrl;
       const local = await context.observeTaskGroups({
         externalId: candidate.externalId,
-        ...(candidate.sourceUrl ? { sourceUrl: candidate.sourceUrl } : {}),
+        ...(sourceUrl !== undefined ? { sourceUrl } : {}),
       });
       const issue = await issueClient.getIssue(repository, parsed.issueNumber);
       if (!issue)
@@ -649,13 +700,29 @@ export function createForgejoSyncProvider(
             retries.add(parsed.issueNumber);
           else retries.delete(parsed.issueNumber);
         }
-        // Retain unresolved/remote-write work BEFORE committing any links or read progress.
+        const applied = new Set(
+          [...issued.payload.tasks, ...issued.payload.taskUpdates].map((row) => row.externalId)
+        );
+        for (const comment of issued.payload.comments ?? []) applied.add(comment.externalTaskId);
+        const originalRefs = new Set([
+          ...ledger.pending.original.result.tasks.map((row) => row.externalId),
+          ...(ledger.pending.original.result.comments ?? []).map(
+            (comment) => comment.externalTaskId
+          ),
+        ]);
+        const omittedIds = [...originalRefs].filter((id) => !applied.has(id));
+        const deferredPulls = resolveForgejoDeferredPulls(ledger.deferredPulls, applied, {
+          original: ledger.pending.original,
+          externalIds: omittedIds,
+        });
+        // Retain exact deferred originals BEFORE committing links or read progress.
         save(binding, project, {
           ...ledger,
           remoteWrites: queued,
           retryIssueNumbers: [...retries],
           deferredAssignments: [...deferredAssignments],
           deferredCommentIssueNumbers: [...deferredComments],
+          deferredPulls,
         });
         // Persist actual host IDs first so staged comment links never inherit a provisional task ID.
         for (const result of outcomes) {
@@ -671,13 +738,8 @@ export function createForgejoSyncProvider(
             taskId: result.localTaskId,
           });
         }
-        const supplied = new Set(
-          [...issued.payload.tasks, ...issued.payload.taskUpdates].map((row) => row.externalId)
-        );
         const omitted = new Set(
-          ledger.pending.original.result.tasks
-            .filter((row) => !supplied.has(row.externalId))
-            .map((row) => parseForgejoIssueExternalId(row.externalId).issueNumber)
+          omittedIds.map((id) => parseForgejoIssueExternalId(id).issueNumber)
         );
         // Omitted missing-local rows did not apply, including their staged comment provenance.
         commitForgejoPullLinks(
@@ -1015,7 +1077,6 @@ export function createForgejoSyncProvider(
                   throw new Error("Local-deletion closure was not verified");
               }
             }
-            linkStore.remove(binding.id, orphan.taskId);
             const ledger = fields(binding, project);
             const writes = { ...ledger.remoteWrites };
             delete writes[orphan.externalId];
@@ -1025,6 +1086,10 @@ export function createForgejoSyncProvider(
               ...ledger,
               remoteWrites: writes,
               creations,
+              deferredPulls: resolveForgejoDeferredPulls(
+                ledger.deferredPulls,
+                new Set([orphan.externalId])
+              ),
               retryIssueNumbers: ledger.retryIssueNumbers.filter(
                 (number) => number !== orphan.issueNumber
               ),
@@ -1035,6 +1100,9 @@ export function createForgejoSyncProvider(
                 (number) => number !== orphan.issueNumber
               ),
             });
+            // Keep the real identity until cleanup is durable. Either failure
+            // boundary is replayable without treating a closed issue as new.
+            linkStore.remove(binding.id, orphan.taskId);
           }
         }
         const comments = await pushComments({
